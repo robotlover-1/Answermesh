@@ -33,9 +33,10 @@ cp deploy/app/.env.example deploy/app/.env
 vi deploy/app/.env        # 至少填 DEEPSEEK_API_KEY；要公网访问再填 PUBLIC_DOMAIN / FRP_SERVER_ADDR / FRP_AUTH_TOKEN
 chmod 600 deploy/app/.env
 
-# ② 语义模型（可选，语义缓存需要；一次即可）
-bash semantic/tools/fetch_model.sh          # 从 GitHub Release 下载+sha256 校验（~79MB）
-#   或 ECHO_FETCH_MODEL=1 ./start.sh 让 start.sh 缺模型时自动下载。
+# ② 可选的一次性资源（用不到就跳过；都不是每次都要跑的）
+bash semantic/tools/fetch_model.sh          # 语义模型（~79MB，自动 sha256 校验）：语义缓存需要
+bash deploy/scripts/fetch_frpc.sh           # frp 客户端：**要公网访问才需要**（bin/ 被 gitignore，clone 里没有）
+#   也可让 start.sh 缺啥下啥：ECHO_FETCH_MODEL=1 ECHO_FETCH_FRPC=1 ./start.sh
 
 # ③ 启动（之后永远是这样，无需参数）
 ./start.sh
