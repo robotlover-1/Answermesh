@@ -156,6 +156,10 @@ func (chat *ChatService) ChatProcess(ctx *gin.Context) {
 				klog.Error(err)
 				return
 			}
+			// 末尾补一个换行做**记录终止符**：前端 createNdjsonReader 只解析已用 '\n'
+			// 结束的行，没有它这一帧会永远留在读取器的 carry 里不被解析 —— 而 tokensUsed /
+			// tokensSaved 只在这一帧下发，于是用量显示一直不更新（此前就存在的老问题）。
+			ctx.Writer.Write([]byte("\n"))
 			ctx.Writer.Flush()
 			return
 		}
