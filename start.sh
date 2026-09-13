@@ -79,11 +79,29 @@ for b in "${GO_BUILDS[@]}"; do
   fi
 done
 
-# 前端：dist 与 backend/www 缺一即重建
+# 前端：dist/www 缺失、或**源文件比产物新**（git pull 换了 src 却没重建）→ 重建。
+# 只判"文件是否存在"是不够的：git pull 更新了 src/ 时 dist 仍在，会被跳过，
+# 于是浏览器继续跑旧 JS —— 若这次改动同时涉及前后端协议（如流式帧字段），
+# 旧前端配新后端会直接渲染不出内容。Go 服务那边一直有 -newer 判断，前端此前漏了。
 frontend_need=0
 [ $REBUILD -eq 1 ] && frontend_need=1
 [ -f "$BASE/ai-chat-web/dist/index.html" ] || frontend_need=1
 [ -f "$BASE/ai-chat-backend/www/index.html" ] || frontend_need=1
+if [ $frontend_need -eq 0 ]; then
+  if find "$BASE/ai-chat-web/src" "$BASE/ai-chat-web/public" -type f \
+       -newer "$BASE/ai-chat-web/dist/index.html" -print -quit 2>/dev/null | grep -q .; then
+    frontend_need=1
+  fi
+  for _fe in index.html vite.config.ts package.json; do
+    if [ -f "$BASE/ai-chat-web/$_fe" ] && [ "$BASE/ai-chat-web/$_fe" -nt "$BASE/ai-chat-web/dist/index.html" ]; then
+      frontend_need=1; break
+    fi
+  done
+  # backend/www 是 dist 的拷贝产物，落后也要重跑一遍（否则后端仍发旧页面）
+  if [ "$BASE/ai-chat-web/dist/index.html" -nt "$BASE/ai-chat-backend/www/index.html" ]; then
+    frontend_need=1
+  fi
+fi
 if [ $frontend_need -eq 1 ]; then
   echo "  [build] 前端 (pnpm install + build-only)"
   if ! ( cd "$BASE/ai-chat-web" && pnpm install --fetch-retries=15 && pnpm build-only ); then
