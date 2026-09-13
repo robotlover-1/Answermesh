@@ -35,6 +35,29 @@ SERVICE_NAMES="$(for e in "${SERVICES[@]}"; do echo "${e%%|*}"; done | tr '\n' '
 logfile() { echo "$LOG_DIR/$1.log"; }
 pidfile() { echo "$PID_DIR/$1.pid"; }
 
+# 把 env 文件的 KEY=VALUE 安全导出到当前环境（逐行解析，不做 eval/source；值含 & # 空格也安全）。
+# 解析规则与 deploy/scripts/lib.sh 的 require_env 保持一致 —— 改动请同步两处。
+# 同名变量以文件为准（覆盖已有环境变量），与「.env 文件优先于环境变量」的既有约定一致。
+load_env_file() {
+  local envfile="$1" _line _key _val
+  [ -f "${envfile}" ] || return 0
+  while IFS= read -r _line || [ -n "${_line}" ]; do
+    _line="${_line%$'\r'}"
+    if [ -z "${_line}" ] || [ "${_line#\#}" != "${_line}" ] || [ "${_line}" = "${_line%%=*}" ]; then
+      continue
+    fi
+    if [ "${_line#export }" != "${_line}" ]; then _line="${_line#export }"; fi
+    _key="${_line%%=*}"; _val="${_line#*=}"
+    if [ "${_val}" != "${_val#\"}" ] && [ "${#_val}" -ge 2 ] && [ "${_val%\"}" != "${_val}" ]; then
+      _val="${_val#\"}"; _val="${_val%\"}"
+    fi
+    if [ "${_val}" != "${_val#\'}" ] && [ "${#_val}" -ge 2 ] && [ "${_val%\'}" != "${_val}" ]; then
+      _val="${_val#\'}"; _val="${_val%\'}"
+    fi
+    declare -gx "${_key}=${_val}"
+  done < "${envfile}"
+}
+
 # 端口是否在监听（ss -tln 的 Local Address 列，IPv4 形如 0.0.0.0:5160，IPv6 形如 *:50053）
 port_listening() {
   local port="$1"

@@ -16,6 +16,13 @@ export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/.local/bin"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 mkdir -p "$LOG_DIR" "$PID_DIR"
 
+# deploy/app/.env 若存在就先载入本进程环境 —— 它同时供两处使用：
+#   ① 本脚本自己（DEEPSEEK_API_KEY 检查、以及传给 start_one 拉起的服务，proxy 只在启动时读它）
+#   ② frpc 的渲染（ensure_frpc 里会再按需解析一次，两条路径不冲突）
+# 有了这一步，「.env 里填一次，之后 ./start.sh 裸跑」才成立；否则 FRP_* 能用而
+# DEEPSEEK_API_KEY 到不了 proxy，表现为聊天一直转圈、proxy 直连返回 401。
+load_env_file "$FRPC_ENV"
+
 echo "== 环境/补编译 =="
 
 # ---- zrpc v2：libzrpc.a 增量构建 ----
@@ -124,9 +131,14 @@ if [ ! -f "$BASE/semantic/models/e5s-v1/model.onnx" ]; then
   fi
 fi
 
-if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
-  echo "⚠ 未设置 DEEPSEEK_API_KEY：openai-api-proxy 将使用占位 key，DeepSeek 调用会失败。"
-  echo "  使用真实 key：DEEPSEEK_API_KEY=sk-xxx ./start.sh"
+if [ -z "${DEEPSEEK_API_KEY:-}" ] || [ "${DEEPSEEK_API_KEY}" = "CHANGE_ME_sk-xxx" ] \
+   || [ "${DEEPSEEK_API_KEY#sk-placeholder}" != "${DEEPSEEK_API_KEY}" ]; then
+  echo "⚠ 未设置有效的 DEEPSEEK_API_KEY：openai-api-proxy 将使用占位 key，聊天会一直转圈（proxy 直连返回 401）。"
+  echo "  推荐：写进 $FRPC_ENV 的这一行，之后 ./start.sh 裸跑即可 ——"
+  echo "        DEEPSEEK_API_KEY=sk-xxx"
+  echo "  或在启动时带上（仅当上面那个文件不存在时才生效，文件优先）："
+  echo "        DEEPSEEK_API_KEY=sk-xxx ./start.sh"
+  echo "  改完必须 ./stop.sh 再起：proxy 只在进程启动时读这个变量，重启才会拿到新值。"
   echo "  离线/无 key 调试：把 openai-api-proxy/dev.config.yaml 的 base_url 改回 http://localhost:8083/v1（mock）"
 fi
 
