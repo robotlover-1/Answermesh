@@ -37,6 +37,18 @@ func zeroHandler(_ context.Context, _ json.RawMessage, w *zrpc.StreamWriter) err
 	return w.End()
 }
 
+// manyChunks 远大于客户端事件队列容量（128），用来复现"生产快、消费慢"。
+const manyChunks = 2000
+
+func manyHandler(_ context.Context, _ json.RawMessage, w *zrpc.StreamWriter) error {
+	for i := 0; i < manyChunks; i++ {
+		if err := w.Send(chunk{K: i}); err != nil {
+			return err
+		}
+	}
+	return w.End()
+}
+
 func errHandler(_ context.Context, _ json.RawMessage, w *zrpc.StreamWriter) error {
 	_ = w.Send(chunk{K: 0})
 	_ = w.Send(chunk{K: 1})
@@ -57,6 +69,7 @@ func startStreamServer(t *testing.T, hs *hangState) *zrpc.Server {
 	reg("s.multi", multiHandler)
 	reg("s.zero", zeroHandler)
 	reg("s.err", errHandler)
+	reg("s.many", manyHandler)
 	if hs != nil {
 		reg("s.hang", func(ctx context.Context, _ json.RawMessage, w *zrpc.StreamWriter) error {
 			hs.running.Store(true)
@@ -126,6 +139,49 @@ func TestStreamMultiChunksOrdered(t *testing.T) {
 		if got[i] != i {
 			t.Fatalf("chunk %d = %d, want %d (order)", i, got[i], i)
 		}
+	}
+}
+
+// 回归测试：消费者慢（每收几个 chunk 就歇一下），生产端事件数远超 evCh 容量 128。
+//
+// 修好前，回调在队列满时用 select/default **丢弃**事件，本用例会出现缺号或提前 EOF
+// （丢了流终止事件时连 EOF 都等不到）——日志里的 "stream event queue full, dropping
+// kind=N" 就是它；这正是线上"回答缺段/输出不完整"的成因。
+//
+// 修好后靠背压（回调阻塞等待消费者）一个不丢。
+func TestStreamSlowConsumerLosesNothing(t *testing.T) {
+	srv := startStreamServer(t, nil)
+	defer srv.Close()
+	cli := waitStreamReady(t)
+	defer cli.Close()
+
+	st, err := cli.Stream(context.Background(), "s.many", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close()
+
+	got := 0
+	for {
+		var c chunk
+		err := st.Recv(&c)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if c.K != got {
+			t.Fatalf("乱序或缺号：期望 %d，收到 %d（说明事件被丢弃）", got, c.K)
+		}
+		got++
+		// 故意慢下来，让生产端把队列灌满
+		if got%10 == 0 {
+			time.Sleep(3 * time.Millisecond)
+		}
+	}
+	if got != manyChunks {
+		t.Fatalf("丢事件：只收到 %d/%d 个 chunk", got, manyChunks)
 	}
 }
 

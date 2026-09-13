@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -324,10 +323,21 @@ func goZRPCOnStreamEvent(handle C.uint64_t, _ C.uint64_t, event C.int, status C.
 	if dataLen > 0 {
 		ev.data = C.GoBytes(data, C.int(dataLen))
 	}
+	// 队列满时**阻塞等待**，绝不丢弃 —— 这是整条流的水位控制。
+	//
+	// 该回调由 zrpc_client_call_stream 在「本流专属的 C 连接读循环」上同步调用
+	// （zrpc_client.c 里未另起线程），所以这里阻塞只会停住这一条流的读取：
+	// 消费者慢 → 读循环停 → 对端 TCP 窗口关闭 → 服务端自然减速。只影响本流。
+	//
+	// 曾经用 select/default 直接丢弃，代价是：消费者（HTTP 写回浏览器）一慢，
+	// 队列就溢出，客户端看到的回答缺段；若丢掉 STREAM_END(kind=4)，Recv 永远
+	// 等不到 io.EOF，前端就一直转圈。日志表现为 "stream event queue full"。
+	//
+	// 留 ctx.Done() 分支：消费者提前放弃（取消/超时）时放行，避免 C 线程被永久
+	// 阻塞在回调里出不来。
 	select {
 	case s.evCh <- ev:
-	default:
-		log.Printf("zrpc: stream event queue full, dropping kind=%d", ev.kind)
+	case <-s.ctx.Done():
 	}
 }
 
@@ -399,10 +409,11 @@ func (c *Client) runStream(ctx context.Context, method string, req []byte, s *St
 	close(stop)
 }
 
+// push 与 goZRPCOnStreamEvent 同样是"不丢事件"的阻塞投递；见那里的注释。
+// 现有调用点（连接建立失败时投递 ERROR）队列必空，不会真的阻塞。
 func (s *Stream) push(ev streamEvent) {
 	select {
 	case s.evCh <- ev:
-	default:
-		log.Printf("zrpc: stream event queue full, dropping kind=%d", ev.kind)
+	case <-s.ctx.Done():
 	}
 }
