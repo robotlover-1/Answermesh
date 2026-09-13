@@ -576,7 +576,12 @@ def _residual_words(_qp):
         # 若它含中文且每个字符都已落在已消费词的字面里(如 写∈白名单、红∈别名“红黑树”)，判为碎片丢弃。
         if cover and re.search(r"[一-鿿]", w) and all(ch in cover for ch in wl):
             continue
-        keep.add(w)
+        # 存归一化后的小写形式，不存原文——残差是"内容约束"的比较基准，
+        # 大小写不构成约束差异。存原文会让「生成一个Linklist」与「生成一个linklist」
+        # 得到不同的 frozenset，被 decision.py 的残差复核判成 constraint_conflict
+        # 从而永远不命中缓存（两者本应共用一条缓存）。
+        # 不影响指纹：build_fingerprint 仅在残差为空时才产出，此时这里恒为 no-op。
+        keep.add(wl)
     return frozenset(keep)
 
 

@@ -61,3 +61,22 @@ def test_soft_rejects_conflicting_when_enabled():
         assert (s, r, soft) == (False, "language_conflict", False), (s, r, soft)
     finally:
         os.environ["SEMANTIC_SOFT_FALLBACK"] = old
+
+
+def test_residual_is_case_insensitive():
+    """回归：残差词曾按原文大小写存入，导致「只差一个字母大小写」的问句被判成
+    constraint_conflict 而永远不命中缓存（两问本应共用一条缓存）。
+
+    residual 是"内容约束"的比较基准，大小写不构成约束差异 —— 归一化后再比较。
+    """
+    for q, c in [
+        ("生成一个Linklist", "生成一个linklist"),
+        ("生成一个LINKLIST", "生成一个linklist"),
+        ("用Python写个LRU缓存", "用python写个lru缓存"),
+    ]:
+        s, r, _ = H(q, c)
+        assert (s, r) == (True, "ok"), f"{q!r} vs {c!r} → {(s, r)}"
+
+    # 大小写之外的实质差异仍然要拒（别把这条修成"什么都放行"）
+    assert H("用Go写Linklist", "用Python写linklist")[:2] == (False, "language_conflict")
+    assert H("生成一个Linklist", "生成一个linklist并排序")[:2] != (True, "ok")
