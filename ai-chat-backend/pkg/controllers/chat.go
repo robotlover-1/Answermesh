@@ -126,7 +126,6 @@ func (chat *ChatService) ChatProcess(ctx *gin.Context) {
 	defer stream.Close()
 
 	firstChunk := true
-	chunkCount := 0 // 流式过程中定期刷新 tokens 统计
 	ctx.Header("Content-type", "application/octet-stream")
 	for {
 		rsp, err := stream.Recv()
@@ -188,24 +187,17 @@ func (chat *ChatService) ChatProcess(ctx *gin.Context) {
 			result.Detail = rsp
 		}
 
-		// 流式过程中每 15 个 chunk 刷新一次 tokens 统计，前端实时更新
-		// 仅 LLM 回答需要（缓存命中答案瞬间到齐，不做周期统计，避免上千次 tokenizer 调用拖垮流式）
-		chunkCount++
-		if chunkCount%15 == 0 && result.Source == "llm" {
-			promptMsg := openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: payload.Prompt}
-			respMsg := openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: result.Text}
-			pt, err1 := tokenizer.GetTokenCount(promptMsg, chat.config.Chat.Model)
-			rt, err2 := tokenizer.GetTokenCount(respMsg, chat.config.Chat.Model)
-			if err1 == nil && err2 == nil {
-				if result.Source == "cache" {
-					result.TokensSaved = pt + rt
-				} else {
-					result.TokensUsed = pt + rt
-				}
-			}
-		}
+		// 这里原本每 15 个 chunk 用**累积全文**打两次同步 HTTP 去 tokenizer 统计 tokens。
+		// 那是又一处 O(n²)：调用次数随流长线性增长、每次载荷又是全文，而且卡在流的热路径上。
+		// 现在只在流结束时统计一次（见上面 io.EOF 分支），数值一样是这一轮的最终用量。
 
-		bts, err := json.Marshal(result)
+		// 每帧只发增量（Delta），**不带累积全文**：result.Text 每帧都发的话，单帧载荷随回答
+		// 长度线性增长，整条流总流量是 O(n²)（3000 字回答约 1.4MB，只发增量约 240KB）。
+		// 公网隧道上这会越传越慢；配合 zrpc 背压还会反过来拖慢上游 LLM。
+		// 全文只在末帧（io.EOF 分支）给一次，供前端对齐全文与重试基准。
+		frame := result
+		frame.Text = ""
+		bts, err := json.Marshal(frame)
 		if err != nil {
 			klog.Error(err)
 			ctx.JSON(200, gin.H{

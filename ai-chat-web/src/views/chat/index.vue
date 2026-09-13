@@ -119,10 +119,14 @@ async function onConversation() {
   scrollToBottom()
 
   try {
-    let lastText = ''
-    // 流式节流：后端每帧发累积全文，逐帧全量 markdown 重渲染是 O(n²)（见 utils/functions/throttle.ts）。
-    // 负载在此处即时组装（text 用当下的 lastText），节流只推迟 DOM 更新与滚动，
-    // 故重试分支改写 lastText 后，挂起的那一帧仍是正确文本、不会重复拼接。
+    let lastText = '' // 此前各段已完成的全文（长回答分多次请求时用）
+    let acc = '' // 本段的全文：由每帧的 delta 累积，末帧用后端给的 text 对齐
+    // 流式节流：逐帧全量 markdown 重渲染是 O(n²)（见 utils/functions/throttle.ts），
+    // 所以只节流 DOM 更新与滚动，文本在这里即时组装。
+    //
+    // 后端每帧只发增量 `delta`（全文只在末帧的 `text` 里给一次）——以前每帧都发累积全文，
+    // 单帧载荷随回答长度线性增长、整条流总流量 O(n²)，公网隧道上越传越慢。故此处必须自己
+    // 按段累积，不能再直接用 `data.text`。
     const renderStream = throttleLast((chat: Chat.Chat) => {
       updateChat(+uuid, dataSources.value.length - 1, chat)
       scrollToBottomIfAtBottom()
@@ -130,9 +134,11 @@ async function onConversation() {
     const fetchChatAPIOnce = async (retried = false): Promise<void> => {
       // 每个请求一个 reader（重试时重置偏移），只认完整帧，见 utils/functions/ndjson.ts
       const readStream = createNdjsonReader<Chat.ConversationResponse>((data) => {
+        if (data.delta) acc += data.delta
+        if (data.text) acc = data.text // 末帧权威全文（本段）
         renderStream({
           dateTime: new Date().toLocaleString(),
-          text: lastText + data.text ?? '',
+          text: lastText + acc,
           inversion: false,
           error: false,
           loading: false,
@@ -145,7 +151,8 @@ async function onConversation() {
 
         if (openLongReply && data.detail.choices[0].finish_reason === 'length') {
           options.parentMessageId = data.id
-          lastText = data.text
+          lastText = acc // 语义同改前的 lastText = data.text（末帧 acc 即本段全文）
+          acc = ''
           message = ''
           return fetchChatAPIOnce()
         }
@@ -254,17 +261,20 @@ async function onRegenerate(index: number) {
   )
 
   try {
-    let lastText = ''
-    // 节流同 onSend：见 utils/functions/throttle.ts
+    let lastText = '' // 此前各段已完成的全文（长回答分多次请求时用）
+    let acc = '' // 本段全文：由每帧 delta 累积，末帧用后端给的 text 对齐
+    // 节流同 onSend：见 utils/functions/throttle.ts；增量累积的原因也同 onSend（后端每帧只发 delta）
     const renderStream = throttleLast((chat: Chat.Chat) => {
       updateChat(+uuid, index, chat)
     })
     const fetchChatAPIOnce = async (retried = false): Promise<void> => {
       // 每个请求一个 reader（重试时重置偏移），只认完整帧，见 utils/functions/ndjson.ts
       const readStream = createNdjsonReader<Chat.ConversationResponse>((data) => {
+        if (data.delta) acc += data.delta
+        if (data.text) acc = data.text // 末帧权威全文（本段）
         renderStream({
           dateTime: new Date().toLocaleString(),
-          text: lastText + data.text ?? '',
+          text: lastText + acc,
           inversion: false,
           error: false,
           loading: false,
@@ -277,7 +287,8 @@ async function onRegenerate(index: number) {
 
         if (openLongReply && data.detail.choices[0].finish_reason === 'length') {
           options.parentMessageId = data.id
-          lastText = data.text
+          lastText = acc
+          acc = ''
           message = ''
           return fetchChatAPIOnce()
         }
