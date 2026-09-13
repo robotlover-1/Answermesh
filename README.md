@@ -26,17 +26,29 @@ AnswerMesh/
 git clone --recurse-submodules https://github.com/robotlover-1/Answermesh.git
 cd AnswerMesh
 
-# kvstore(C)与前端 dist 若缺失，start.sh 会自动 make / pnpm 重建；也可手动：
-#   ( cd kvstore/kvstore && make )          # 子模块 VSEARCH 前缀参数版
-# 语义模型（可选，语义缓存需要；一次即可）：
+# ① 配置：只填这一次 —— 填你自己的 key / 域名 / token
+#    deploy/app/.env 被 gitignore，不会入库，所以每个人 clone 后填自己的那份；
+#    填完这一个文件，以后每次都只是 ./start.sh，不用再带任何参数。
+cp deploy/app/.env.example deploy/app/.env
+vi deploy/app/.env        # 至少填 DEEPSEEK_API_KEY；要公网访问再填 PUBLIC_DOMAIN / FRP_SERVER_ADDR / FRP_AUTH_TOKEN
+chmod 600 deploy/app/.env
+
+# ② 语义模型（可选，语义缓存需要；一次即可）
 bash semantic/tools/fetch_model.sh          # 从 GitHub Release 下载+sha256 校验（~79MB）
 #   或 ECHO_FETCH_MODEL=1 ./start.sh 让 start.sh 缺模型时自动下载。
 
-DEEPSEEK_API_KEY=sk-xxx ./start.sh   # key 走环境变量，勿提交 git
+# ③ 启动（之后永远是这样，无需参数）
+./start.sh
+
+# kvstore(C) 与前端 dist 若缺失，start.sh 会自动 make / pnpm 重建；也可手动：
+#   ( cd kvstore/kvstore && make )          # 子模块 VSEARCH 前缀参数版
 
 # 另一种环境方案（各节点免装依赖/模型）：全栈 Docker —— 见 docker/README.md
 #   cd docker && DEEPSEEK_API_KEY=sk-xxx docker compose up -d --build
 ```
+
+> 不想建文件也行：`DEEPSEEK_API_KEY=sk-xxx ./start.sh` 直接把值带在命令行上。但**文件存在时以文件为准**，
+> 所以要么只用文件、要么只用命令行，别两处都写。公网访问的完整前提见下节。
 
 前置依赖：Go、make/gcc（kvstore）、pnpm/node（前端，仅首次）、Python 3.8+（host 需 `pip install -r semantic/requirements.txt tokenizer/requirements.txt`；nuxt/jieba 等按既有说明）。
 
