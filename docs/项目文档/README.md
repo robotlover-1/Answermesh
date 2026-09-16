@@ -16,7 +16,7 @@
   - **AnswerMesh** `github.com/robotlover-1/Answermesh` —— ai 助手，内部 `kvstore/` 为 submodule
 - 历史大仓库 `9.1-kvstore` 仅作迭代历史参考。
 - 一句话概括：**用自己写的 Redis（kvstore）给一个 AI 聊天系统当"短期记忆"**。
-- 对外公网访问（FRP 内网穿透，2026-09）：双节点"云入口 frps+Nginx / 本地跑完整 AnswerMesh"，见 [docs/answermesh-frp-nat-traversal.md](../answermesh-frp-nat-traversal.md) 与 [04-业务应用.md §8.4](04-业务应用.md)。
+- 对外公网访问（FRP 内网穿透，2026-09）：双节点"云入口 frps+Nginx / 本地跑完整 AnswerMesh"，见 [docs/echo-chat-frp-nat-traversal.md](../echo-chat-frp-nat-traversal.md) 与 [04-业务应用.md §8.4](04-业务应用.md)。
 - 每份文档末尾都标注了"文档与代码的已知差异"，遇到冲突以代码为准。ai-chat 侧演进历程见 [04-业务应用.md §11](04-业务应用.md)。
 
 > 生成于 2026-08-26；2026-09-03 更新仓库拆分说明。关键事实均经代码/git 提交逐行核验。

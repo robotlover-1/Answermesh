@@ -284,11 +284,9 @@ esac
 
 ### 4.3 分支/评审节奏
 
-整个迭代按 **brainstorming(spec) → writing-plans(计划) → subagent-driven(执行+逐任务评审) → whole-branch 终审** 推进；中间插入外部评审（两轮 P0/P1），逐条修订 spec。相关文档：
+整个迭代按 **brainstorming(spec) → writing-plans(计划) → subagent-driven(执行+逐任务评审) → whole-branch 终审** 推进；中间插入外部评审（两轮 P0/P1），逐条修订 spec。相关文档（过程用的 spec/计划已清理，只保留结论性归档）：
 
-- 主方案归档：`docs/deploy/2026-09-05-answermesh-tunnel-vm-public-deployment-design.md`、`docs/deploy/2026-09-06-answermesh-direct-public-deployment-and-tunnel-removal.md`
-- spec：`docs/superpowers/specs/2026-09-05-*`、`docs/superpowers/specs/2026-09-06-answermesh-edge-2c2g-frp-revision-design.md`
-- 计划：`docs/superpowers/plans/2026-09-05-*`、`docs/superpowers/plans/2026-09-06-answermesh-edge-2c2g-frp-revision.md`
+- 主方案归档：`docs/deploy/2026-09-05-echo-chat-tunnel-vm-public-deployment-design.md`、`docs/deploy/2026-09-06-echo-chat-direct-public-deployment-and-tunnel-removal.md`
 
 ---
 

@@ -1,7 +1,7 @@
 # AnswerMesh 公网部署（deploy/）
 
-拓扑与主方案：docs/deploy/2026-09-05-answermesh-tunnel-vm-public-deployment-design.md
-落地 spec：docs/superpowers/specs/2026-09-05-answermesh-tunnel-vm-public-deployment-design.md
+拓扑与主方案：docs/deploy/2026-09-05-echo-chat-tunnel-vm-public-deployment-design.md
+直连方案（隧道移除后）：docs/deploy/2026-09-06-echo-chat-direct-public-deployment-and-tunnel-removal.md
 
 ## 双节点角色与资源
 - 本地应用节点：完整 AnswerMesh（docker/compose，127.0.0.1:7080 仅回环）+ frpc（deploy/app）。建议 ≥4核8GB / 80GB；本地断电/休眠/断网即断公网。
@@ -53,7 +53,7 @@ FLUSH PRIVILEGES;
 
 ## 上线前门禁（合并 main / 正式上线前须完成，结果记入验收文档）
 - 真实 2核2G 云主机跑通 deploy-edge.sh（含首次证书申请）；本地 deploy-app.sh 后 L1–L4 分层通过。
-- T 验收：见 docs/deploy/2026-09-06-answermesh-direct-public-deployment-and-tunnel-removal.md §13 与评审 §7（T01–T18）。
+- T 验收：见 docs/deploy/2026-09-06-echo-chat-direct-public-deployment-and-tunnel-removal.md §13（T01–T18）。
 - 演练：frpc 断连/恢复、云主机重启自动恢复、certbot renew --dry-run + reload hook。
 - 端口扫描确认：80/443/39000 符合策略；39001/7500 公网不可达。
 

@@ -34,7 +34,7 @@ zrpc-sanitize:
 	CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer" \
 	  $(MAKE) -C third_party/zrpc test
 
-# ---- 关键 Go 用例（race；真栈/含外部依赖的端到端由运维运行，见 docs/zrpc-migration）----
+# ---- 关键 Go 用例（race；真栈/含外部依赖的端到端由运维运行）----
 test-go: zrpc ccli
 	cd zrpc-go && CGO_ENABLED=1 go test -race ./...
 	cd keywords-filter && CGO_ENABLED=1 go test ./filter-server/server/...

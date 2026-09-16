@@ -1,22 +1,34 @@
 # AnswerMesh（ai 助手）
 
-零声教学 AI 助手微服务版。独立仓库，kvstore 以 submodule 引入（`kvstore/`），用法与 kvstore 自身引用 NtyCo 一致。
+独立仓库，pocketkv 以 submodule 引入（`kvstore/`），用法与 pocketkv 自身引用 NtyCo 一致。
 
 ## 仓库结构
 
 ```text
 AnswerMesh/
-├── ai-chat-backend/     ← Go HTTP 网关（页面 + /api/chat-process）
-├── ai-chat-service/     ← Go gRPC 核心服务（对话编排 + 语义缓存）
-├── keywords-filter/     ← 敏感词/关键词过滤
+├── ai-chat-backend/     ← Go HTTP 网关（页面 + /api/chat-process），zrpc 客户端
+├── ai-chat-service/     ← Go 核心服务（对话编排 + 语义缓存），zrpc 服务端
+├── keywords-filter/     ← 敏感词/关键词过滤，zrpc 服务端
 ├── openai-api-proxy/    ← DeepSeek 反向代理（key 走环境变量）
 ├── mock-openai-api/     ← 离线 mock（无 key 调试用）
 ├── tokenizer/           ← token 计数（tiktoken，仅计 token）
 ├── semantic/            ← 语义检索独立服务(:3003)：e5 嵌入 + parse + decision + 安全指纹
 ├── ai-chat-web/         ← Vue3 前端
+├── third_party/zrpc/    ← 自研 C RPC 框架 v2（NtyCo 协程），构建出 libzrpc.a
+├── zrpc-go/             ← zrpc 的 Go 封装（cgo bridge + client/server/stream）
 ├── kvstore/             ← submodule → robotlover-1/pocket-kv（自研 Redis）
-└── start.sh / stop.sh   ← 一键启停
+├── configs/             ← pocketkv 运行配置（kvstore-ai.conf）
+├── deploy/              ← 公网部署：app（本地应用节点）/ edge（云端 frps+Nginx）/ scripts
+├── docker/              ← 全栈 Docker Compose（build-from-source）
+├── monitoring/          ← Prometheus + Grafana 监控栈
+├── ai-chat-stack/       ← 早期 Docker Swarm 栈，已废弃，仅存档
+├── docs/                ← 项目文档/（4 份综合文档）、deploy/（部署设计归档）、
+│                          sql/、FRP 说明、superpowers/bench/（性能实测记录）
+├── start.sh / stop.sh / lib.sh   ← 一键启停（lib.sh 为服务清单与公共函数）
+└── Makefile             ← pocketkv/zrpc 构建、Go 测试、三服务二进制
 ```
+
+> 过程性文档（设计 spec、实施计划、zrpc 迁移任务记录）已从仓库清理，只留结论性归档与实测记录；需要追溯时见 git 历史。
 
 > 语义检索依赖大模型文件 `semantic/models/e5s-v1/model.onnx`（multilingual-e5-small，ONNX/INT8）。该目录 **gitignored**，不在仓库内；缺失时 semantic 能启动但语义缓存不可用（`start.sh` 会打印提示、Go 优雅 miss，聊天不受影响）。
 
@@ -59,19 +71,21 @@ bash deploy/scripts/fetch_frpc.sh           # frp 客户端：**要公网访问�
 
 三个前置条件缺一不可：
 
-| # | 需要什么 | 怎么来 |
-|---|---|---|
-| 1 | 一台公网云主机，跑着 frps + Nginx | 按 [deploy/README.md](deploy/README.md) 在云主机执行 `deploy/edge`（2C2G 起步） |
-| 2 | 一个域名，DNS A 记录指向云主机 IP | 如 `answermesh.xyz`；大陆机房还需 ICP 备案 |
+
+| # | 需要什么                                                     | 怎么来                                                                                                     |
+| - | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| 1 | 一台公网云主机，跑着 frps + Nginx                            | 按[deploy/README.md](deploy/README.md) 在云主机执行 `deploy/edge`（2C2G 起步）                             |
+| 2 | 一个域名，DNS A 记录指向云主机 IP                            | 如`answermesh.xyz`；大陆机房还需 ICP 备案                                                                  |
 | 3 | `bin/frpc` 客户端（与云端 frps **同版本**，本项目用 0.62.1） | 一条命令：`bash deploy/scripts/fetch_frpc.sh`（`bin/` 已 gitignore，脚本会下载 + 官方 sha256 校验 + 安装） |
 
 ### 那三个值分别怎么来
 
-| 变量 | 是什么 | 怎么获取 |
-|---|---|---|
-| `PUBLIC_DOMAIN` | 你要对外用的域名 | 你自己的域名。去域名服务商控制台加一条 A 记录指向云主机 IP：`example.com.  A  1.2.3.4`（大陆机房还需 ICP 备案） |
-| `FRP_SERVER_ADDR` | 云主机的公网 IPv4 | **在云主机上**执行：`curl -s https://ipinfo.io/ip` 或 `curl -s https://ifconfig.me` |
-| `FRP_AUTH_TOKEN` | 两端共享的密钥，**一个需要你手动填到两端的配置值** | **已有部署：直接查云端现成在用的那个**（见 ①），不要重新生成。全新部署才需要 `openssl rand -hex 32` 生成一次，再手动填到两端 |
+
+| 变量              | 是什么                                             | 怎么获取                                                                                                                      |
+| ----------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_DOMAIN`   | 你要对外用的域名                                   | 你自己的域名。去域名服务商控制台加一条 A 记录指向云主机 IP：`example.com.  A  1.2.3.4`（大陆机房还需 ICP 备案）               |
+| `FRP_SERVER_ADDR` | 云主机的公网 IPv4                                  | **在云主机上**执行：`curl -s https://ipinfo.io/ip` 或 `curl -s https://ifconfig.me`                                           |
+| `FRP_AUTH_TOKEN`  | 两端共享的密钥，**一个需要你手动填到两端的配置值** | **已有部署：直接查云端现成在用的那个**（见 ①），不要重新生成。全新部署才需要 `openssl rand -hex 32` 生成一次，再手动填到两端 |
 
 > ⚠️ **`openssl rand -hex 32` 什么都不"设置"。** 它只是往屏幕打印一串随机字符——不改文件、
 > 不动配置、两端谁都不会自动知道。它的输出必须由你**手动**送到两个地方：
@@ -133,12 +147,14 @@ cp deploy/app/.env.example deploy/app/.env   # 填 PUBLIC_DOMAIN / FRP_SERVER_AD
 > `FRP_AUTH_TOKEN=abc\` + 换行 + `./start.sh` 会被 bash 拼成 `FRP_AUTH_TOKEN=abc./start.sh`——
 > 整条命令退化成"纯变量赋值"，`start.sh` 根本不会执行，而且**一行输出都没有**（很容易误判成"跑通了但没效果"）。
 > 正确写法：
+>
 > ```bash
 > PUBLIC_DOMAIN=example.com \
 > FRP_SERVER_ADDR=1.2.3.4 \
 > FRP_AUTH_TOKEN=abc \
 > ./start.sh
 > ```
+>
 > 判断有没有真跑起来：有输出 `== 环境/补编译 ==` 和 `[frpc] 渲染配置 ...` 才算。
 
 A 与 B 同时存在时以 **B（`.env` 文件）优先**。也可以让 `start.sh` 顺带把 frpc 也下了：

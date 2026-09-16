@@ -23,7 +23,7 @@
 
 原始实现特征（供对照，非本项目约束）：
 单次 `send/recv` 假设整帧收齐、`CRC32(4B)+length(2B)` 帧头、固定 caller ID、注册式方法表、
-基于 NtyCo 协程调度。zrpc v2 已针对这些特征逐一加固（`docs/superpowers/plans/2026-09-04-answermesh-c-zrpc-cross-language-migration-plan.md` §4-§5）。
+基于 NtyCo 协程调度。zrpc v2 已针对这些特征逐一加固（详见本目录 README 与源码）。
 
 ## 3. cJSON
 
