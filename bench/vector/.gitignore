@@ -1,0 +1,8 @@
+# Milvus Lite 的落盘库文件（每个规模一个，10 万条时约 200MB）—— 可随时重跑生成，
+# 不进版本库。小的结果 JSON 与图要保留。
+results/tmp/*.db
+results/tmp/*.db.lock
+
+# matplotlib 缓存等
+__pycache__/
+*.pyc
