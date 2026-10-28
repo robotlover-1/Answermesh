@@ -276,8 +276,11 @@ func goZRPCDispatchRequest(handle C.uint64_t, rid C.uint64_t, fd C.int,
 		entry:    entry,
 	}:
 	default:
-		// Never block the NtyCo coroutine; overflowed requests time out client-side.
-		log.Printf("zrpc: dispatch queue full, dropping request rid=%d", uint64(rid))
+		// Never block the NtyCo coroutine; but don't silently drop either:
+		// reply immediately so the client fails fast instead of waiting for timeout.
+		// sendErr is safe from this goroutine (conn_lock_for_write serializes writers).
+		log.Printf("zrpc: dispatch queue full, rejecting request rid=%d", uint64(rid))
+		entry.srv.sendErr(int(fd), uint64(rid), CodeResourceExhausted, "server overloaded")
 	}
 }
 
