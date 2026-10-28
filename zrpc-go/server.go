@@ -34,7 +34,34 @@ type UnaryHandler func(ctx context.Context, raw json.RawMessage) (any, error)
 type ServerOptions struct {
 	Address     string // e.g. "0.0.0.0:50055"
 	AccessToken string // empty disables auth
-	Workers     int    // dispatch workers; 0 => 8
+	Workers     int    // dispatch workers; 0 => 8, negative is rejected
+	// StreamConcurrency caps concurrently running StreamHandlers; 0 => 64.
+	// Over-limit requests are rejected immediately with CodeResourceExhausted.
+	StreamConcurrency int
+}
+
+const (
+	defaultWorkers           = 8
+	defaultStreamConcurrency = 64
+)
+
+// normalizeOptions validates and fills ServerOptions defaults.
+func normalizeOptions(opts ServerOptions) (workers, streamConc int, err error) {
+	workers = opts.Workers
+	if workers < 0 {
+		return 0, 0, fmt.Errorf("zrpc: Workers must be >= 0, got %d", workers)
+	}
+	if workers == 0 {
+		workers = defaultWorkers
+	}
+	streamConc = opts.StreamConcurrency
+	if streamConc < 0 {
+		return 0, 0, fmt.Errorf("zrpc: StreamConcurrency must be >= 0, got %d", streamConc)
+	}
+	if streamConc == 0 {
+		streamConc = defaultStreamConcurrency
+	}
+	return workers, streamConc, nil
 }
 
 /* ---- global handle registry (C never stores Go pointers, only uint64) ---- */
@@ -89,6 +116,11 @@ type Server struct {
 	jobs   chan requestJob
 	done   chan struct{}
 	wg     sync.WaitGroup
+	workers int
+
+	// streamSem bounds concurrently running StreamHandler goroutines. A request
+	// arriving when it is full is rejected immediately (fail fast, no queueing).
+	streamSem chan struct{}
 
 	streamsMu   sync.Mutex
 	streamsByFD map[int]*StreamWriter
@@ -104,6 +136,10 @@ type requestJob struct {
 
 // NewServer creates the C server. Call Serve() to start listening.
 func NewServer(opts ServerOptions) (*Server, error) {
+	workers, streamConc, err := normalizeOptions(opts)
+	if err != nil {
+		return nil, err
+	}
 	addr := C.CString(opts.Address)
 	var tok *C.char
 	if opts.AccessToken != "" {
@@ -128,6 +164,8 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		c:           csrv,
 		jobs:        make(chan requestJob, 1024),
 		done:        make(chan struct{}),
+		workers:     workers,
+		streamSem:   make(chan struct{}, streamConc),
 		streamsByFD: map[int]*StreamWriter{},
 	}
 	return s, nil
@@ -164,7 +202,7 @@ func (s *Server) Serve() error {
 	}
 	C.zrpc_bridge_set_conn_close(s.c) // stream handlers cancelled on disconnect
 	serverAdd(s)
-	for i := 0; i < 8; i++ {
+	for i := 0; i < s.workers; i++ {
 		s.wg.Add(1)
 		go s.worker()
 	}
@@ -189,7 +227,18 @@ func (s *Server) runJob(j requestJob) {
 	case UnaryHandler:
 		s.runUnary(j, fn)
 	case StreamHandler:
-		go s.runStream(j, fn) // long-running: hand off to its own goroutine
+		// Long-running: hand off to its own goroutine, but bound concurrency.
+		// Rejecting here (instead of queueing) gives the client a fast BUSY.
+		select {
+		case s.streamSem <- struct{}{}:
+			go func() {
+				defer func() { <-s.streamSem }()
+				s.runStream(j, fn)
+			}()
+		default:
+			s.sendErr(j.fd, j.rid, CodeResourceExhausted,
+				"too many concurrent streams")
+		}
 	default:
 		s.sendErr(j.fd, j.rid, CodeInternal, "unregistered handler kind")
 	}
