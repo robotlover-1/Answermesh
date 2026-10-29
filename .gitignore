@@ -164,3 +164,7 @@ deploy/edge/.env
 deploy/app/tunnel/frpc.yaml
 deploy/edge/tunnel/frps.yaml
 deploy/edge/nginx/answermesh.conf
+
+# 本地监控凭据（由运维生成，禁止提交）
+monitoring/config/mysqld_exporter.cnf
+monitoring/config/monitoring.env

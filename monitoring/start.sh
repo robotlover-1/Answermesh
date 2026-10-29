@@ -19,11 +19,12 @@ port_listening() { ss -tln 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${1}$"
 
 start_prom() {
   if port_listening 9090; then echo "  [prometheus] ✔ already running (9090)"; return 0; fi
-  ( cd "$ROOT" && nohup "$ROOT/bin/prometheus" \
+  # exec 让后台 job 的 PID 就是 prometheus 本体（否则 pid 文件记录的是中间 subshell）。
+  ( cd "$ROOT" && exec nohup "$ROOT/bin/prometheus" \
       --config.file=prometheus/prometheus.yml \
       --storage.tsdb.path=prometheus/data \
       --web.listen-address=:9090 \
-      >"$LOG_DIR/prometheus.log" 2>&1 & echo $! > "$PID_DIR/prometheus.pid" )
+      >"$LOG_DIR/prometheus.log" 2>&1 ) & echo $! > "$PID_DIR/prometheus.pid"
   local i
   for i in $(seq 1 40); do port_listening 9090 && { echo "  [prometheus] ✔ 9090 listening"; return 0; }; sleep 0.5; done
   echo "  [prometheus] ✘ 启动失败, 日志尾部:"; tail -n 8 "$LOG_DIR/prometheus.log" | sed 's/^/    /'; return 1
@@ -35,8 +36,8 @@ start_graf() {
       GF_PATHS_DATA="$ROOT/grafana/data" \
       GF_PATHS_PROVISIONING="$ROOT/config/grafana/provisioning" \
       GF_SECURITY_DISABLE_INITIAL_ADMIN_PASSWORD_CHANGE=true \
-      nohup "$ROOT/grafana/bin/grafana" server --homepath="$ROOT/grafana" \
-      >"$LOG_DIR/grafana.log" 2>&1 & echo $! > "$PID_DIR/grafana.pid" )
+      exec nohup "$ROOT/grafana/bin/grafana" server --homepath="$ROOT/grafana" \
+      >"$LOG_DIR/grafana.log" 2>&1 ) & echo $! > "$PID_DIR/grafana.pid"
   local i
   for i in $(seq 1 60); do port_listening 3000 && { echo "  [grafana] ✔ 3000 listening"; return 0; }; sleep 0.5; done
   echo "  [grafana] ✘ 启动失败, 日志尾部:"; tail -n 8 "$LOG_DIR/grafana.log" | sed 's/^/    /'; return 1
@@ -46,7 +47,7 @@ start_graf() {
 start_daemon() {
   local name="$1" port="$2" log="$3"; shift 3
   if port_listening "$port"; then echo "  [$name] ✔ already running ($port)"; return 0; fi
-  ( cd "$ROOT" && nohup "$@" >"$LOG_DIR/$log" 2>&1 & echo $! > "$PID_DIR/$name.pid" )
+  ( cd "$ROOT" && exec nohup "$@" >"$LOG_DIR/$log" 2>&1 ) & echo $! > "$PID_DIR/$name.pid"
   local i
   for i in $(seq 1 20); do port_listening "$port" && { echo "  [$name] ✔ $port listening"; return 0; }; sleep 0.25; done
   echo "  [$name] ✘ 启动失败, 日志尾部:"; tail -n 5 "$LOG_DIR/$log" 2>/dev/null | sed 's/^/    /'; rm -f "$PID_DIR/$name.pid"; return 1

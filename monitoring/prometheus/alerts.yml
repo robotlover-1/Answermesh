@@ -82,6 +82,24 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "chat_records 入库队列积压超过 1024"
+      - alert: AnswerMeshOutboxBacklog
+        expr: ai_chat_chat_service_outbox_pending_jobs > 100
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "知识发布 Outbox 积压超过 100"
+      - alert: AnswerMeshOutboxStale
+        expr: ai_chat_chat_service_outbox_oldest_pending_age_seconds > 300
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "最老 Outbox 任务超过 5 分钟未完成（PocketKV/Worker 可能故障）"
+      - alert: AnswerMeshTxRetries
+        expr: increase(ai_chat_chat_service_mysql_tx_retries_total[5m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "MySQL 事务出现死锁/锁等待重试（{{ $labels.reason }}）"
 
   - name: mysql
     rules:

@@ -17,6 +17,6 @@ datasources:
       maxOpenConns: 4
       maxIdleConns: 2
       connMaxLifetime: 14400
-      timezone: UTC
+      timezone: "+00:00"
     secureJsonData:
       password: $MYSQL_RO_PASSWORD
