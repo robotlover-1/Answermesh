@@ -134,6 +134,7 @@ func main() {
 		log.ErrorF("identity secret is empty: chat usage/session and session APIs will be limited (set AI_CHAT_IDENTITY_SECRET)")
 	}
 	sessionRepo := data.NewSessionRepository(mysql.GetDB(), busMetrics)
+	sessionRecorder := data.NewSessionRecorder(sessionRepo, busMetrics)
 	usageRepo := data.NewUsageRepository(mysql.GetDB(), busMetrics)
 	usageRecorder := data.NewUsageRecorder(usageRepo, busMetrics)
 	knowledgeRepo := data.NewKnowledgeRepository(mysql.GetDB(), busMetrics)
@@ -167,7 +168,7 @@ func main() {
 
 	// 单 zrpc 传输（gRPC 已删）：业务端口即 cnf.Server.Port（50055）
 	service := server.NewChatServiceWithDeps(recordsData, cnf, logger, busMetrics, server.ChatDeps{
-		Sessions:  sessionRepo,
+		Sessions:  sessionRecorder,
 		Usage:     usageRecorder,
 		Identity:  identityVerifier,
 		Knowledge: knowledgeRead,
@@ -221,6 +222,9 @@ func main() {
 	}
 	if err := usageRecorder.Close(shutdownCtx); err != nil {
 		log.ErrorF("drain usage queue: %v", err)
+	}
+	if err := sessionRecorder.Close(shutdownCtx); err != nil {
+		log.ErrorF("drain session queue: %v", err)
 	}
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.ErrorF("metrics http shutdown: %v", err)

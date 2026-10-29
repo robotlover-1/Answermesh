@@ -55,14 +55,14 @@ type chatService struct {
 	busMetrics *metrics_bus.BusMetrics
 
 	// 可选依赖：未注入时聊天主链路保持原行为（不记用量、不写会话历史）。
-	sessions  *data.SessionRepository
+	sessions  *data.SessionRecorder
 	usage     *data.UsageRecorder
 	identity  *identity.Verifier
 	knowledge *data.KnowledgeService
 }
 
 type ChatDeps struct {
-	Sessions  *data.SessionRepository
+	Sessions  *data.SessionRecorder
 	Usage     *data.UsageRecorder
 	Identity  *identity.Verifier
 	Knowledge *data.KnowledgeService

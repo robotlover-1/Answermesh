@@ -47,6 +47,12 @@ type BusMetrics struct {
 	UsageWriteFailures   *prometheus.CounterVec
 	UsageEvents          *prometheus.CounterVec
 	UsageQueueDepth      prometheus.Gauge
+
+	// 会话历史异步写入。
+	SessionEnqueueFailures *prometheus.CounterVec
+	SessionWriteFailures   *prometheus.CounterVec
+	SessionAppends         *prometheus.CounterVec
+	SessionQueueDepth      prometheus.Gauge
 }
 
 const (
@@ -272,6 +278,34 @@ func NewBusMetrics(registry *prometheus.Registry) *BusMetrics {
 		ConstLabels: map[string]string{"app": "ai_chat"},
 		Help:        "用量账本异步入库队列积压条数",
 	})
+	sessionEnqueueFailures := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "session_enqueue_failures_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "会话历史异步入队失败次数（reason=closed|timeout|canceled|other）",
+	}, []string{"reason"})
+	sessionWriteFailures := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "session_write_failures_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "会话历史数据库写入失败次数（reason=timeout|canceled|db_error）",
+	}, []string{"reason"})
+	sessionAppends := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "session_appends_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "会话历史写入结果（created=yes|no，no=幂等重复）",
+	}, []string{"created"})
+	sessionQueueDepth := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "session_queue_length",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "会话历史异步入库队列积压条数",
+	})
 
 	registry.MustRegister(questionsTotalCounter, keywordsQuestionsTotalCounter,
 		sensitiveQuestionsTotalCounter, errQuestionsTotalCounter,
@@ -281,7 +315,8 @@ func NewBusMetrics(registry *prometheus.Registry) *BusMetrics {
 		cacheRequests, cacheWrites, llmRequests, llmTokens,
 		mysqlQueries, mysqlQueryDuration, mysqlTxRetries,
 		outboxPending, outboxOldestAge, outboxEvents, kbCacheLookups,
-		usageEnqueueFailures, usageWriteFailures, usageEvents, usageQueueLength)
+		usageEnqueueFailures, usageWriteFailures, usageEvents, usageQueueLength,
+		sessionEnqueueFailures, sessionWriteFailures, sessionAppends, sessionQueueDepth)
 	return &BusMetrics{
 		QuestionsTotalCounter:          questionsTotalCounter,
 		KeywordsQuestionsTotalCounter:  keywordsQuestionsTotalCounter,
@@ -312,6 +347,10 @@ func NewBusMetrics(registry *prometheus.Registry) *BusMetrics {
 		UsageWriteFailures:             usageWriteFailures,
 		UsageEvents:                    usageEvents,
 		UsageQueueDepth:                usageQueueLength,
+		SessionEnqueueFailures:         sessionEnqueueFailures,
+		SessionWriteFailures:           sessionWriteFailures,
+		SessionAppends:                 sessionAppends,
+		SessionQueueDepth:              sessionQueueDepth,
 	}
 }
 
@@ -398,4 +437,25 @@ func (m *BusMetrics) LLMToken(kind string, n int) {
 		return
 	}
 	m.LLMTokens.WithLabelValues(kind).Add(float64(n))
+}
+
+// 以下实现 data.SessionObserver。
+func (m *BusMetrics) SessionEnqueueFailure(reason string) {
+	m.SessionEnqueueFailures.WithLabelValues(reason).Inc()
+}
+
+func (m *BusMetrics) SessionWriteFailure(reason string) {
+	m.SessionWriteFailures.WithLabelValues(reason).Inc()
+}
+
+func (m *BusMetrics) SessionAppended(created bool) {
+	label := "no"
+	if created {
+		label = "yes"
+	}
+	m.SessionAppends.WithLabelValues(label).Inc()
+}
+
+func (m *BusMetrics) SessionQueueLength(n int) {
+	m.SessionQueueDepth.Set(float64(n))
 }

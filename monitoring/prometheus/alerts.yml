@@ -117,6 +117,18 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "用量账本写入持续失败（{{ $labels.reason }}）"
+      - alert: AnswerMeshSessionWriteFailures
+        expr: increase(ai_chat_chat_service_session_write_failures_total[5m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "会话历史写入持续失败（{{ $labels.reason }}）"
+      - alert: AnswerMeshSessionQueueBacklog
+        expr: ai_chat_chat_service_session_queue_length > 512
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "会话历史队列积压超过 512"
       - alert: AnswerMeshUsageQueueBacklog
         expr: ai_chat_chat_service_usage_queue_length > 1024
         for: 5m

@@ -98,15 +98,17 @@ func (s *chatService) appendConversation(claims *contract.IdentityClaims, meta c
 	if s.sessions == nil || claims == nil || meta.SessionID == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_, _, _, err := s.sessions.AppendConversation(ctx, claims.TenantID, claims.UserID, meta.SessionID,
-		data.AppendInput{
+	err := s.sessions.Add(ctx, data.SessionAppendJob{
+		TenantID: claims.TenantID, UserID: claims.UserID, SessionID: meta.SessionID,
+		Input: data.AppendInput{
 			RequestID: requestID, UserContent: userMsg, UserTokens: userTokens,
 			AssistantContent: assistantMsg, AssistantTokens: assistantTokens, Source: source,
-		})
+		},
+	})
 	if err != nil {
-		s.log.ErrorF("append conversation failed: %v", err)
+		s.log.ErrorF("session append enqueue failed: %v", err)
 	}
 }
 
