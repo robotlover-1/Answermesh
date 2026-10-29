@@ -1,10 +1,11 @@
 package config
 
 import (
+	"log"
 	"os"
+	"strings"
 
 	"github.com/spf13/viper"
-	"log"
 )
 
 type Config struct {
@@ -44,6 +45,12 @@ func InitConfig(filePath string, typ ...string) {
 	// DeepSeek key 从环境变量注入，覆盖配置文件（不把密钥写进 git）
 	if k := os.Getenv("DEEPSEEK_API_KEY"); k != "" {
 		conf.Chat.APIKeys = []string{k}
+	}
+	if strings.Contains(conf.Http.AccessToken, "${") {
+		conf.Http.AccessToken = os.ExpandEnv(conf.Http.AccessToken)
+	}
+	if v := os.Getenv("OPENAI_PROXY_ACCESS_TOKEN"); v != "" {
+		conf.Http.AccessToken = v
 	}
 
 }

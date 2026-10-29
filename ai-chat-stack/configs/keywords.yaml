@@ -2,7 +2,7 @@ server:
   ip: 0.0.0.0
   port: 50051
   healthPort: 18082
-  accessToken: "ang1chubdev1ozhome256487d22sapguuv1ozhom"
+  accessToken: "${AI_CHAT_KEYWORDS_ACCESS_TOKEN}"
 log:
   # panic,fatal,errro,warn,info,debug,trace
   level: "info"

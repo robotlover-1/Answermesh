@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"time"
 
+	metrics_bus "ai-chat-service/chat-server/metrics-bus"
 	"ai-chat-service/proto"
 	zrpc "echo-zrpc-go"
 	"echo-zrpc-go/contract"
@@ -23,13 +25,46 @@ type ChatSvc interface {
 	ServeChatStreamZRPC(ctx context.Context, raw json.RawMessage, w *zrpc.StreamWriter) error
 }
 
-// RegisterChatZRPC wires chat methods on a zrpc.Server.
-func RegisterChatZRPC(zsrv *zrpc.Server, chat ChatSvc, streamOK bool) error {
-	if err := zsrv.RegisterUnary(contract.MethodChatCompletion, unaryChatAdapter(chat)); err != nil {
+func zrpcStatus(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "ok"
+}
+
+// RegisterChatZRPC wires chat methods on a zrpc.Server and records zRPC-level
+// latency/count (current primary transport). Labels only contain method/status.
+func RegisterChatZRPC(zsrv *zrpc.Server, chat ChatSvc, streamOK bool,
+	bus *metrics_bus.BusMetrics) error {
+	unary := unaryChatAdapter(chat)
+	if bus != nil {
+		inner := unary
+		unary = func(ctx context.Context, raw json.RawMessage) (any, error) {
+			start := time.Now()
+			resp, err := inner(ctx, raw)
+			bus.ZrpcUnaryDuration.WithLabelValues(
+				contract.MethodChatCompletion, zrpcStatus(err)).
+				Observe(time.Since(start).Seconds())
+			return resp, err
+		}
+	}
+	if err := zsrv.RegisterUnary(contract.MethodChatCompletion, unary); err != nil {
 		return err
 	}
 	if streamOK {
-		if err := zsrv.RegisterStream(contract.MethodChatCompletionStream, chat.ServeChatStreamZRPC); err != nil {
+		stream := chat.ServeChatStreamZRPC
+		if bus != nil {
+			inner := stream
+			stream = func(ctx context.Context, raw json.RawMessage, w *zrpc.StreamWriter) error {
+				start := time.Now()
+				err := inner(ctx, raw, w)
+				bus.ZrpcStreamDuration.WithLabelValues(
+					contract.MethodChatCompletionStream, zrpcStatus(err)).
+					Observe(time.Since(start).Seconds())
+				return err
+			}
+		}
+		if err := zsrv.RegisterStream(contract.MethodChatCompletionStream, stream); err != nil {
 			return err
 		}
 	}

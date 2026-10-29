@@ -31,6 +31,8 @@ services:
       retries: 3
       start_period: 5s
   keywords:
+    environment:
+      AI_CHAT_KEYWORDS_ACCESS_TOKEN: "${AI_CHAT_KEYWORDS_ACCESS_TOKEN:-}"
     image: 192.168.239.161:5000/2404/keywords-filter:1.0.0
     deploy:
       mode: replicated
@@ -54,6 +56,8 @@ services:
       - source: 2404-keywords-dict
         target: /app/dict.txt
   sensitive:
+    environment:
+      AI_CHAT_SENSITIVE_ACCESS_TOKEN: "${AI_CHAT_SENSITIVE_ACCESS_TOKEN:-}"
     image: 192.168.239.161:5000/2404/keywords-filter:1.0.0
     deploy:
       mode: replicated
@@ -79,6 +83,13 @@ services:
       - source: 2404-sensitive-dict
         target: /app/dict.txt
   ai-chat-service:
+    environment:
+      AI_CHAT_MYSQL_DSN: "${AI_CHAT_MYSQL_DSN:-}"
+      AI_CHAT_SERVER_ACCESS_TOKEN: "${AI_CHAT_SERVER_ACCESS_TOKEN:-}"
+      AI_CHAT_API_KEY: "${AI_CHAT_API_KEY:-}"
+      AI_CHAT_REDIS_PWD: "${AI_CHAT_REDIS_PWD:-}"
+      AI_CHAT_SENSITIVE_ACCESS_TOKEN: "${AI_CHAT_SENSITIVE_ACCESS_TOKEN:-}"
+      AI_CHAT_KEYWORDS_ACCESS_TOKEN: "${AI_CHAT_KEYWORDS_ACCESS_TOKEN:-}"
     image: 192.168.239.161:5000/2404/ai-chat-service:1.0.0
     deploy:
       mode: replicated
@@ -102,6 +113,10 @@ services:
       - source: 2404-ai-chat-service-conf
         target: /app/config.yaml
   ai-chat-backend:
+    environment:
+      AI_CHAT_MYSQL_DSN: "${AI_CHAT_MYSQL_DSN:-}"
+      AI_CHAT_SERVER_ACCESS_TOKEN: "${AI_CHAT_SERVER_ACCESS_TOKEN:-}"
+      AI_CHAT_REDIS_PWD: "${AI_CHAT_REDIS_PWD:-}"
     image: 192.168.239.161:5000/2404/ai-chat-backend:1.0.0
     ports:
       - "7080:80"

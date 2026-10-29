@@ -1,8 +1,11 @@
 package config
 
 import (
-	"github.com/spf13/viper"
 	"log"
+	"os"
+	"strings"
+
+	"github.com/spf13/viper"
 )
 
 type Config struct {
@@ -114,7 +117,45 @@ func InitConfig(filePath string, typ ...string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	applyEnvOverrides(conf)
+}
 
+func expandEnvValue(v string) string {
+	if strings.Contains(v, "${") {
+		return os.ExpandEnv(v)
+	}
+	return v
+}
+
+func envOverride(name, cur string) string {
+	if val := os.Getenv(name); val != "" {
+		return val
+	}
+	return cur
+}
+
+// applyEnvOverrides 把敏感配置从 YAML/仓库移出：支持 ${VAR} 占位符和显式 env 覆盖。
+// 不把 DSN/token 写入日志或 Prometheus 标签。
+func applyEnvOverrides(c *Config) {
+	if c == nil {
+		return
+	}
+	c.Mysql.DSN = envOverride("AI_CHAT_MYSQL_DSN", expandEnvValue(c.Mysql.DSN))
+	c.Server.AccessToken = envOverride("AI_CHAT_SERVER_ACCESS_TOKEN",
+		expandEnvValue(c.Server.AccessToken))
+	c.Chat.ApiKey = envOverride("AI_CHAT_API_KEY", expandEnvValue(c.Chat.ApiKey))
+	if c.Chat.ApiKey == "" {
+		c.Chat.ApiKey = envOverride("OPENAI_API_KEY", "")
+	}
+	c.Redis.Pwd = envOverride("AI_CHAT_REDIS_PWD", expandEnvValue(c.Redis.Pwd))
+	c.DependOn.Sensitive.AccessToken = envOverride("AI_CHAT_SENSITIVE_ACCESS_TOKEN",
+		expandEnvValue(c.DependOn.Sensitive.AccessToken))
+	c.DependOn.Keywords.AccessToken = envOverride("AI_CHAT_KEYWORDS_ACCESS_TOKEN",
+		expandEnvValue(c.DependOn.Keywords.AccessToken))
+	c.VectorDB.Username = envOverride("AI_CHAT_VECTORDB_USERNAME",
+		expandEnvValue(c.VectorDB.Username))
+	c.VectorDB.Pwd = envOverride("AI_CHAT_VECTORDB_PWD",
+		expandEnvValue(c.VectorDB.Pwd))
 }
 
 func GetConfig() *Config {

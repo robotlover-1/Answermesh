@@ -1,8 +1,11 @@
 package config
 
 import (
-	"github.com/spf13/viper"
 	"log"
+	"os"
+	"strings"
+
+	"github.com/spf13/viper"
 )
 
 type Config struct {
@@ -35,7 +38,12 @@ func InitConfig(filePath string, typ ...string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-
+	if strings.Contains(conf.Server.AccessToken, "${") {
+		conf.Server.AccessToken = os.ExpandEnv(conf.Server.AccessToken)
+	}
+	if v := os.Getenv("AI_CHAT_KEYWORDS_ACCESS_TOKEN"); v != "" {
+		conf.Server.AccessToken = v
+	}
 }
 
 func GetConfig() *Config {

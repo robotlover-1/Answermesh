@@ -1,7 +1,7 @@
 http:
   host: "0.0.0.0"
   port: 8084
-  access_token: "i0jey84SdkFdw5u43780yjr3h7se8nth0yi295nr94ksDngKprEh"
+  access_token: "${OPENAI_PROXY_ACCESS_TOKEN}"
   mode: "debug"
 chat:
   # DeepSeek key 通过环境变量 DEEPSEEK_API_KEY 注入；此处为占位，防止 api_keys 为空导致 rand 越界

@@ -1,8 +1,11 @@
 package config
 
 import (
-	"github.com/spf13/viper"
 	"log"
+	"os"
+	"strings"
+
+	"github.com/spf13/viper"
 )
 
 type Config struct {
@@ -72,7 +75,33 @@ func InitConfig(filePath string, typ ...string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	applyEnvOverrides(conf)
+}
 
+func expandEnvValue(v string) string {
+	if strings.Contains(v, "${") {
+		return os.ExpandEnv(v)
+	}
+	return v
+}
+
+func envOverride(name, cur string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return cur
+}
+
+// 敏感配置不入库：支持 ${VAR} 占位符与 env 覆盖（MySQL DSN / 服务 token / Redis 密码）。
+func applyEnvOverrides(c *Config) {
+	if c == nil {
+		return
+	}
+	c.Mysql.DSN = envOverride("AI_CHAT_MYSQL_DSN", expandEnvValue(c.Mysql.DSN))
+	c.DependOn.AiChatService.AccessToken = envOverride(
+		"AI_CHAT_SERVER_ACCESS_TOKEN",
+		expandEnvValue(c.DependOn.AiChatService.AccessToken))
+	c.Redis.Pwd = envOverride("AI_CHAT_REDIS_PWD", expandEnvValue(c.Redis.Pwd))
 }
 
 func GetConfig() *Config {

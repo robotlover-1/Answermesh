@@ -104,7 +104,7 @@ func TestChatCompletionZRPCAdapter(t *testing.T) {
 		Choices: []*proto.ChatCompletionChoice{{Index: 0, Message: &proto.ChatCompletionMessage{Role: "assistant", Content: "hi"}, FinishReason: "stop"}},
 		Usage:   &proto.Usage{PromptTokens: 12, CompletionTokens: 3, TotalTokens: 15},
 	}}
-	if err := RegisterChatZRPC(zsrv, fake, false); err != nil {
+	if err := RegisterChatZRPC(zsrv, fake, false, nil); err != nil {
 		t.Fatalf("RegisterChatZRPC: %v", err)
 	}
 	if err := zsrv.Serve(); err != nil {

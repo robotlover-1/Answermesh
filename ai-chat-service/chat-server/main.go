@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net/http"
@@ -66,9 +67,15 @@ func main() {
 	logger.SetOutput(log.GetRotateWriter(cnf.Log.LogPath))
 	logger.SetPrintCaller(true)
 
-	mysql.InitMysql(cnf)
+	if err := mysql.InitMysql(cnf); err != nil {
+		log.FatalF("init mysql: %v", err)
+	}
+	if cnf.Server.AccessToken == "" {
+		log.Fatal("server access token is empty; set AI_CHAT_SERVER_ACCESS_TOKEN")
+	}
 	redis.InitRedisPool(cnf)
 	recordsData := data.NewChatRecordsData(mysql.GetDB())
+	defer recordsData.Close(context.Background())
 
 	// 单 zrpc 传输（gRPC 已删）：业务端口即 cnf.Server.Port（50055）
 	service := server.NewChatService(recordsData, cnf, logger, busMetrics)
@@ -79,7 +86,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := server.RegisterChatZRPC(zsrv, service, true); err != nil {
+	if err := server.RegisterChatZRPC(zsrv, service, true, busMetrics); err != nil {
 		log.Fatal(err)
 	}
 	if err := zsrv.Serve(); err != nil {

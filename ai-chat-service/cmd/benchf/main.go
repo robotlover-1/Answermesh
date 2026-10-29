@@ -22,7 +22,8 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-const token = "ang1chubdev1ozhome256487d22sapguuv1ozhom"
+var token = os.Getenv("AI_CHAT_KEYWORDS_ACCESS_TOKEN")
+
 const text = "完全正常的句子，讨论天气"
 
 func pct(a []float64, p float64) float64 { return a[int(p*float64(len(a)-1))] }

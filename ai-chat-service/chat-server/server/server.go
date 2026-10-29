@@ -38,6 +38,17 @@ func NewChatService(data data.IChatRecordsData, config *config.Config, log log.I
 	}
 }
 
+// enqueueRecord 把记录交给有界入库队列；不阻塞请求路径超过 200ms。
+// 失败只记录错误并计数，不把用户内容写入日志。
+func (s *chatService) enqueueRecord(records *data.ChatRecord) {
+	addCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := s.data.Add(addCtx, records); err != nil {
+		s.busMetrics.RecordsWriteErrorsCounter.Inc()
+		s.log.Error(err)
+	}
+}
+
 func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompletionRequest) (*proto.ChatCompletionResponse, error) {
 	redisContextCache := chat_context.NewRedisCache()
 	defer redisContextCache.Close()
@@ -109,28 +120,26 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 			return
 		}
 	}()
-	go func() {
-		records := &data.ChatRecord{
-			UserMsg:         in.Message,
-			UserMsgTokens:   currTokens,
-			UserMsgKeywords: keywords,
-			AIMsg:           resp.Choices[0].Message.Content,
-			AIMsgTokens:     resp.Usage.CompletionTokens,
-			ReqTokens:       tokens,
-			CreateAt:        time.Now().Unix(),
-		}
-		err := s.data.Add(records)
-		if err != nil {
-			s.log.Error(err)
-			return
-		}
-		// 空回答不写缓存，避免污染
-		if content := resp.Choices[0].Message.Content; content != "" {
-			if err := semcache.CacheWrite(context.Background(), in.Message, content); err != nil {
+	records := &data.ChatRecord{
+		UserMsg:         in.Message,
+		UserMsgTokens:   currTokens,
+		UserMsgKeywords: keywords,
+		AIMsg:           resp.Choices[0].Message.Content,
+		AIMsgTokens:     resp.Usage.CompletionTokens,
+		ReqTokens:       tokens,
+		CreateAt:        time.Now().Unix(),
+	}
+	s.enqueueRecord(records)
+	// 空回答不写缓存，避免污染；缓存写入不占用 DB 写入路径。
+	if content := resp.Choices[0].Message.Content; content != "" {
+		go func() {
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := semcache.CacheWrite(cacheCtx, in.Message, content); err != nil {
 				s.log.Error(err)
 			}
-		}
-	}()
+		}()
+	}
 	return res, err
 }
 
@@ -279,29 +288,27 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 			return
 		}
 	}()
-	go func() {
-		s.busMetrics.QuestionsTotalCounter.Inc()
-		records := &data.ChatRecord{
-			UserMsg:         in.Message,
-			UserMsgTokens:   currTokens,
-			UserMsgKeywords: keywords,
-			AIMsg:           completionContent,
-			AIMsgTokens:     resultTokens,
-			ReqTokens:       tokens,
-			CreateAt:        time.Now().Unix(),
-		}
-		err := s.data.Add(records)
-		if err != nil {
-			s.log.Error(err)
-			return
-		}
-		// 空回答或被截断(length)的回答不写缓存，避免污染
-		if completionContent != "" && lastFinish != "length" {
-			if err := semcache.CacheWrite(context.Background(), in.Message, completionContent); err != nil {
+	s.busMetrics.QuestionsTotalCounter.Inc()
+	records := &data.ChatRecord{
+		UserMsg:         in.Message,
+		UserMsgTokens:   currTokens,
+		UserMsgKeywords: keywords,
+		AIMsg:           completionContent,
+		AIMsgTokens:     resultTokens,
+		ReqTokens:       tokens,
+		CreateAt:        time.Now().Unix(),
+	}
+	s.enqueueRecord(records)
+	// 空回答或被截断(length)的回答不写缓存，避免污染
+	if completionContent != "" && lastFinish != "length" {
+		go func() {
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := semcache.CacheWrite(cacheCtx, in.Message, completionContent); err != nil {
 				s.log.Error(err)
 			}
-		}
-	}()
+		}()
+	}
 	return nil
 }
 
