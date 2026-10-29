@@ -93,6 +93,10 @@ openssl rand -hex 32        # 输出填入 AI_CHAT_IDENTITY_SECRET
 支持逗号分隔轮换：`AI_CHAT_IDENTITY_SECRET="<new>,<old>"`（签名用第一个，验签接受任一）。
 未配置时服务仍能启动，但会话 API 一律返回 401。
 
+聊天主链路 `chat.completion[_stream]` 也携带可选 `identity_token` 与 `session_id`：
+服务端用 claims 中的 tenant/user 幂等写入 `llm_usage_events`/`usage_daily`（按 request_id 去重）；
+`session_id>0` 时再把本轮 user+assistant 最终消息写入 `chat_messages`。旧客户端不传时行为不变。
+
 ### 那三个值分别怎么来
 
 

@@ -49,6 +49,36 @@ func (chat *ChatService) authUser(ctx *gin.Context) (*users.User, bool) {
 	return user, true
 }
 
+// mintIdentityToken 用于聊天主链路：身份不可用时返回空串，聊天本身继续（仅不记用量/历史）。
+func (chat *ChatService) mintIdentityToken(ctx *gin.Context) string {
+	cnf := config.GetConfig()
+	if !cnf.Auth.Enabled {
+		return ""
+	}
+	deviceID := ctx.GetString("device_id")
+	if deviceID == "" {
+		return ""
+	}
+	user, err := users.GetByDeviceID(deviceID)
+	if err != nil {
+		chat.log.Error(err)
+		return ""
+	}
+	if user == nil {
+		user, err = users.UpsertByDeviceID(deviceID, cnf.Auth.InitQuota)
+		if err != nil || user == nil {
+			chat.log.Error(err)
+			return ""
+		}
+	}
+	token, err := identity.TokenForUser(uint64(user.ID))
+	if err != nil {
+		chat.log.Error(err)
+		return ""
+	}
+	return token
+}
+
 func (chat *ChatService) identityToken(ctx *gin.Context) (string, bool) {
 	user, ok := chat.authUser(ctx)
 	if !ok {

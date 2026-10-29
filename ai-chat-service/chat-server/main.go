@@ -154,8 +154,20 @@ func main() {
 		}()
 	}
 
+	identityVerifier := identity.NewVerifier(cnf.Identity.Secret, cnf.Identity.Issuer)
+	if !identityVerifier.Configured() {
+		log.ErrorF("identity secret is empty: chat usage/session and session APIs will be limited (set AI_CHAT_IDENTITY_SECRET)")
+	}
+	sessionRepo := data.NewSessionRepository(mysql.GetDB(), busMetrics)
+	usageRepo := data.NewUsageRepository(mysql.GetDB(), busMetrics)
+	usageRecorder := data.NewUsageRecorder(usageRepo, busMetrics)
+
 	// 单 zrpc 传输（gRPC 已删）：业务端口即 cnf.Server.Port（50055）
-	service := server.NewChatService(recordsData, cnf, logger, busMetrics)
+	service := server.NewChatServiceWithDeps(recordsData, cnf, logger, busMetrics, server.ChatDeps{
+		Sessions: sessionRepo,
+		Usage:    usageRecorder,
+		Identity: identityVerifier,
+	})
 	zsrv, err := zrpc.NewServer(zrpc.ServerOptions{
 		Address:     fmt.Sprintf("%s:%d", cnf.Server.IP, cnf.Server.Port),
 		AccessToken: cnf.Server.AccessToken,
@@ -166,13 +178,7 @@ func main() {
 	if err := server.RegisterChatZRPC(zsrv, service, true, busMetrics); err != nil {
 		fatalStartup("%v", err)
 	}
-	identityVerifier := identity.NewVerifier(cnf.Identity.Secret, cnf.Identity.Issuer)
-	if !identityVerifier.Configured() {
-		log.ErrorF("identity secret is empty: session APIs will reject requests (set AI_CHAT_IDENTITY_SECRET)")
-	}
-	if err := server.RegisterSessionZRPC(zsrv,
-		data.NewSessionRepository(mysql.GetDB(), busMetrics),
-		identityVerifier, busMetrics); err != nil {
+	if err := server.RegisterSessionZRPC(zsrv, sessionRepo, identityVerifier, busMetrics); err != nil {
 		fatalStartup("%v", err)
 	}
 	if err := zsrv.Serve(); err != nil {
@@ -205,6 +211,9 @@ func main() {
 	defer cancel()
 	if err := recordsData.Close(shutdownCtx); err != nil {
 		log.ErrorF("drain chat_records queue: %v", err)
+	}
+	if err := usageRecorder.Close(shutdownCtx); err != nil {
+		log.ErrorF("drain usage queue: %v", err)
 	}
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.ErrorF("metrics http shutdown: %v", err)

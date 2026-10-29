@@ -6,6 +6,7 @@ import (
 	metrics_bus "ai-chat-service/chat-server/metrics-bus"
 	semcache "ai-chat-service/chat-server/semcache"
 	"ai-chat-service/pkg/config"
+	"ai-chat-service/pkg/identity"
 	"ai-chat-service/pkg/log"
 	"ai-chat-service/proto"
 	"ai-chat-service/services/tokenizer"
@@ -52,14 +53,33 @@ type chatService struct {
 	log        log.ILogger
 	data       data.IChatRecordsData
 	busMetrics *metrics_bus.BusMetrics
+
+	// 可选依赖：未注入时聊天主链路保持原行为（不记用量、不写会话历史）。
+	sessions *data.SessionRepository
+	usage    *data.UsageRecorder
+	identity *identity.Verifier
+}
+
+type ChatDeps struct {
+	Sessions *data.SessionRepository
+	Usage    *data.UsageRecorder
+	Identity *identity.Verifier
 }
 
 func NewChatService(data data.IChatRecordsData, config *config.Config, log log.ILogger, busMetrics *metrics_bus.BusMetrics) ChatSvc {
+	return NewChatServiceWithDeps(data, config, log, busMetrics, ChatDeps{})
+}
+
+func NewChatServiceWithDeps(data data.IChatRecordsData, config *config.Config, log log.ILogger,
+	busMetrics *metrics_bus.BusMetrics, deps ChatDeps) ChatSvc {
 	return &chatService{
 		config:     config,
 		log:        log,
 		data:       data,
 		busMetrics: busMetrics,
+		sessions:   deps.Sessions,
+		usage:      deps.Usage,
+		identity:   deps.Identity,
 	}
 }
 
@@ -76,6 +96,13 @@ func (s *chatService) enqueueRecord(records *data.ChatRecord) {
 }
 
 func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompletionRequest) (*proto.ChatCompletionResponse, error) {
+	start := time.Now()
+	claims, meta, err := s.unaryIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	requestID := requestIDOf(in.Id)
+
 	redisContextCache := chat_context.NewRedisCache()
 	defer redisContextCache.Close()
 
@@ -83,18 +110,30 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 	//敏感词过滤
 	ok, msg, err := app.sensitive(in)
 	if err != nil {
+		s.recordUsage(claims, meta, requestID, data.UsageSourceUnknown,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return nil, err
 	}
 	if !ok {
+		s.recordUsage(claims, meta, requestID, data.UsageSourceBlocked,
+			data.UsageStatusSuccess, data.UsageTokenSourceNone, 0, 0, 0, start)
 		res := app.buildChatCompletionResponse(msg)
 		return res, nil
 	}
 
 	// 语义缓存：命中直接返回历史答案（不调大模型）
-	if cachedAns, hit := semcache.CacheQuery(ctx, in.Message); hit {
-		s.busMetrics.LLMToken("estimated_saved",
-			estimateTokensRough(in.Message)+estimateTokensRough(cachedAns))
+	if cachedAns, hit, stage := semcache.CacheQueryMeta(ctx, in.Message); hit {
+		saved := estimateTokensRough(in.Message) + estimateTokensRough(cachedAns)
+		s.busMetrics.LLMToken("estimated_saved", saved)
+		source := data.UsageSourceCacheSemantic
+		if stage == "exact" {
+			source = data.UsageSourceCacheExact
+		}
+		s.recordUsage(claims, meta, requestID, source,
+			data.UsageStatusSuccess, data.UsageTokenSourceNone, 0, 0, saved, start)
+		s.appendConversation(claims, meta, requestID, source, in.Message,
+			estimateTokensRough(in.Message), cachedAns, estimateTokensRough(cachedAns))
 		return app.buildChatCompletionResponse(cachedAns), nil
 	}
 
@@ -105,12 +144,16 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 	req, tokens, currTokens, currMessage, err := app.buildChatCompletionRequest(in, false)
 	if err != nil {
 		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		s.recordUsage(claims, meta, requestID, data.UsageSourceUnknown,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return nil, err
 	}
 	resp, err := client.CreateChatCompletion(ctx, req)
 	if err != nil {
 		s.busMetrics.LLMRequest(llmProvider, "error")
+		s.recordUsage(claims, meta, requestID, data.UsageSourceLLM,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return nil, err
 	}
@@ -122,11 +165,15 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 	res := &proto.ChatCompletionResponse{}
 	bytes, err := json.Marshal(resp)
 	if err != nil {
+		s.recordUsage(claims, meta, requestID, data.UsageSourceLLM,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return nil, err
 	}
 	err = jsonpb.UnmarshalString(string(bytes), res)
 	if err != nil {
+		s.recordUsage(claims, meta, requestID, data.UsageSourceLLM,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return nil, err
 	}
@@ -164,6 +211,10 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 		CreateAt:        time.Now().Unix(),
 	}
 	s.enqueueRecord(records)
+	s.recordUsage(claims, meta, requestID, data.UsageSourceLLM, data.UsageStatusSuccess,
+		data.UsageTokenSourceActual, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, 0, start)
+	s.appendConversation(claims, meta, requestID, data.UsageSourceLLM, in.Message,
+		currTokens, resp.Choices[0].Message.Content, resp.Usage.CompletionTokens)
 	// 空回答不写缓存，避免污染；缓存写入不占用 DB 写入路径。
 	if content := resp.Choices[0].Message.Content; content != "" {
 		go func() {
@@ -178,6 +229,13 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 }
 
 func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stream ChatStream) error {
+	start := time.Now()
+	claims, meta, err := s.unaryIdentity(stream.Context())
+	if err != nil {
+		return err
+	}
+	requestID := requestIDOf(in.Id)
+
 	redisContextCache := chat_context.NewRedisCache()
 	defer redisContextCache.Close()
 
@@ -186,11 +244,15 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 	ok, msg, err := app.sensitive(in)
 	if err != nil {
 		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		s.recordUsage(claims, meta, requestID, data.UsageSourceUnknown,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return err
 	}
 	if !ok {
 		s.busMetrics.SensitiveQuestionsTotalCounter.Inc()
+		s.recordUsage(claims, meta, requestID, data.UsageSourceBlocked,
+			data.UsageStatusSuccess, data.UsageTokenSourceNone, 0, 0, 0, start)
 		resId := uuid.New().String()
 		startRes := app.buildChatCompletionStreamResponse(resId, "", "")
 		endRes := app.buildChatCompletionStreamResponse(resId, "", "stop")
@@ -216,9 +278,17 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 	}
 
 	// 语义缓存：命中直接返回历史答案（不调大模型），标注来源 cache
-	if cachedAns, hit := semcache.CacheQuery(stream.Context(), in.Message); hit {
-		s.busMetrics.LLMToken("estimated_saved",
-			estimateTokensRough(in.Message)+estimateTokensRough(cachedAns))
+	if cachedAns, hit, stage := semcache.CacheQueryMeta(stream.Context(), in.Message); hit {
+		saved := estimateTokensRough(in.Message) + estimateTokensRough(cachedAns)
+		s.busMetrics.LLMToken("estimated_saved", saved)
+		source := data.UsageSourceCacheSemantic
+		if stage == "exact" {
+			source = data.UsageSourceCacheExact
+		}
+		s.recordUsage(claims, meta, requestID, source, data.UsageStatusSuccess,
+			data.UsageTokenSourceNone, 0, 0, saved, start)
+		s.appendConversation(claims, meta, requestID, source, in.Message,
+			estimateTokensRough(in.Message), cachedAns, estimateTokensRough(cachedAns))
 		resId := uuid.New().String()
 		startRes := app.withSource(app.buildChatCompletionStreamResponse(resId, "", ""), "cache")
 		endRes := app.withSource(app.buildChatCompletionStreamResponse(resId, "", "stop"), "cache")
@@ -237,6 +307,8 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 	req, tokens, currTokens, currMessage, err := app.buildChatCompletionRequest(in, false)
 	if err != nil {
 		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		s.recordUsage(claims, meta, requestID, data.UsageSourceUnknown,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return err
 	}
@@ -257,6 +329,8 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 		if serr != nil {
 			s.busMetrics.LLMRequest(llmProvider, "error")
 			s.busMetrics.ErrQuestionsTotalCounter.Inc()
+			s.recordUsage(claims, meta, requestID, data.UsageSourceLLM,
+				usageStatusOf(serr), data.UsageTokenSourceNone, 0, 0, 0, start)
 			s.log.Error(serr)
 			return serr
 		}
@@ -300,6 +374,9 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 	resultTokens, err := tokenizer.GetTokens(&resultMessage, model)
 	if err != nil {
 		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		// LLM 已成功但 tokenizer 不可用：只记输入侧 tokenizer 计数，输出未知。
+		s.recordUsage(claims, meta, requestID, data.UsageSourceLLM, data.UsageStatusSuccess,
+			data.UsageTokenSourceTokenizer, currTokens, 0, 0, start)
 		s.log.Error(err)
 		return err
 	}
@@ -343,6 +420,12 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 		CreateAt:        time.Now().Unix(),
 	}
 	s.enqueueRecord(records)
+	s.recordUsage(claims, meta, requestID, data.UsageSourceLLM, data.UsageStatusSuccess,
+		data.UsageTokenSourceTokenizer, currTokens, resultTokens, 0, start)
+	if completionContent != "" {
+		s.appendConversation(claims, meta, requestID, data.UsageSourceLLM, in.Message,
+			currTokens, completionContent, resultTokens)
+	}
 	// 空回答或被截断(length)的回答不写缓存，避免污染
 	if completionContent != "" && lastFinish != "length" {
 		go func() {

@@ -100,6 +100,18 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "MySQL 事务出现死锁/锁等待重试（{{ $labels.reason }}）"
+      - alert: AnswerMeshUsageWriteFailures
+        expr: increase(ai_chat_chat_service_usage_write_failures_total[5m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "用量账本写入持续失败（{{ $labels.reason }}）"
+      - alert: AnswerMeshUsageQueueBacklog
+        expr: ai_chat_chat_service_usage_queue_length > 1024
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "用量账本队列积压超过 1024"
 
   - name: mysql
     rules:

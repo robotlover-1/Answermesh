@@ -491,11 +491,18 @@ func backfillVec(cachedQ string) {
 //	③ VSEARCH <dim> vec topK <VectorNamespace>（复用其 cosine）；
 //	④ 一次 /v1/decision/batch：通过者(share)按 cosine 排序，cos≥acceptance_threshold
 //	   （soft 命中还需 SoftSemanticFallback），Top1-Top2 margin < min_margin → miss；命中返答。
+//
+// CacheQuery 兼容旧调用方；需要区分 exact/semantic 的阶段时用 CacheQueryMeta。
 func CacheQuery(ctx context.Context, query string) (string, bool) {
+	ans, hit, _ := CacheQueryMeta(ctx, query)
+	return ans, hit
+}
+
+func CacheQueryMeta(ctx context.Context, query string) (string, bool, string) {
 	cnf := config.GetConfig()
 	if !cnf.SemanticCache.Enabled {
 		noteCache("gate", "bypass")
-		return "", false
+		return "", false, ""
 	}
 	probeModelConsistency()
 	sc := cnf.SemanticCache
@@ -503,14 +510,14 @@ func CacheQuery(ctx context.Context, query string) (string, bool) {
 	m, err := embedMetaOf(ctx, query)
 	if err != nil {
 		noteCache("gate", "error")
-		return "", false
+		return "", false, ""
 	}
 	log.InfoF("semcache_query_encodes=1 query_len=%d", len(query))
 	if m.Bypass || (m.Subject == "" && m.SubjectID == "") {
 		// 缓存准入（安全收窄）：状态修改/上下文依赖 → 不查；Subject 与 SubjectID 皆空
 		// （通用 how-to 如“怎么减肥”抽不到本体链路）→ 不查全局缓存。
 		noteCache("gate", "bypass")
-		return "", false
+		return "", false, ""
 	}
 	// ② fp 快路径
 	fpChecked := sc.ExactFingerprintEnabled && m.Fingerprint != "" && m.FingerprintEligible
@@ -527,7 +534,7 @@ func CacheQuery(ctx context.Context, query string) (string, bool) {
 							go backfillVec(cq)
 						}
 						noteCache("exact", "hit")
-						return ans, true
+						return ans, true, "exact"
 					}
 				} else if err == nil && !shared {
 					log.InfoF("semcache_fingerprint_collision subject=%s reason=%s", m.SubjectID, reason)
@@ -545,14 +552,14 @@ func CacheQuery(ctx context.Context, query string) (string, bool) {
 	// ③④ 向量召回 + 批量决策（vectorEnabled 关闭时跳过 → miss，fp 路径仍可命中）
 	if !vectorEnabled {
 		noteCache("semantic", "bypass")
-		return "", false
+		return "", false, ""
 	}
 	ns := vectorNamespaceOf(cnf)
 	k := topKOf(cnf)
 	qlist, scores := vsearch(ctx, m.Vec, k, ns)
 	if len(qlist) == 0 {
 		noteCache("semantic", "miss")
-		return "", false
+		return "", false, ""
 	}
 	decs := decisionBatch(ctx, query, qlist)
 	// 收集通过候选（按 condition 过滤），记录 reason 分布便于观测
@@ -587,7 +594,7 @@ func CacheQuery(ctx context.Context, query string) (string, bool) {
 	}
 	if len(accepted) == 0 {
 		noteCache("semantic", "miss")
-		return "", false
+		return "", false, ""
 	}
 	// 按 cosine 降序
 	sort.SliceStable(accepted, func(a, b int) bool {
@@ -600,17 +607,17 @@ func CacheQuery(ctx context.Context, query string) (string, bool) {
 	// Top1-Top2 过近 → miss（区分度保护）
 	if len(accepted) > 1 && top1.score-accepted[1].score < float64(sc.MinMargin) {
 		noteCache("semantic", "miss")
-		return "", false
+		return "", false, ""
 	}
 	ans, ok := fetchAnswer(ctx, top1.q)
 	if !ok {
 		log.InfoF("semcache_vector_hit_no_answer top=%.3f q=%q", top1.score, top1.q)
 		noteCache("semantic", "miss")
-		return "", false
+		return "", false, ""
 	}
 	log.InfoF("semcache_vector_hit subject=%s top=%.3f candidates=%d", m.SubjectID, top1.score, len(qlist))
 	noteCache("semantic", "hit")
-	return ans, true
+	return ans, true, "semantic"
 }
 
 // ============ CacheWrite：只写新 ns(semd:e5s:v1:) + 版本化 + fp；dual_write 灰度补旧 ============

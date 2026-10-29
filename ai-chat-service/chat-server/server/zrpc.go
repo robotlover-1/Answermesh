@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	metrics_bus "ai-chat-service/chat-server/metrics-bus"
@@ -106,6 +107,7 @@ func (s *chatService) ServeChatStreamZRPC(ctx context.Context, raw json.RawMessa
 	if err != nil {
 		return zrpc.InvalidArgument(err)
 	}
+	ctx = withChatMeta(ctx, &creq)
 	// 使用 handler 收到的 ctx（而不是 w.Context()）：wrapper 在里面注入了 TTFT 上报器，
 	// 两者共享同一取消链；w.Context() 是 runStream 的原始 ctx，拿不到 wrapper 的 value。
 	zw := &zrpcChatStream{ctx: ctx, w: w}
@@ -125,8 +127,13 @@ func unaryChatAdapter(chat ChatSvc) zrpc.UnaryHandler {
 		if err != nil {
 			return nil, zrpc.InvalidArgument(err)
 		}
-		presp, err := chat.ChatCompletion(ctx, preq)
+		presp, err := chat.ChatCompletion(withChatMeta(ctx, &creq), preq)
 		if err != nil {
+			// 保留业务层已给出的 StatusError（如身份校验失败→Unauthenticated）。
+			var se *zrpc.StatusError
+			if errors.As(err, &se) {
+				return nil, se
+			}
 			return nil, zrpc.Internal(err)
 		}
 		return contractRespFromProto(presp)

@@ -63,7 +63,7 @@ func TestOpenChatStreamZRPC(t *testing.T) {
 	var st ChatStream
 	retry := func() error {
 		var err error
-		st, err = OpenChatStream(ctx, addr, "tok", in)
+		st, err = OpenChatStream(ctx, addr, "tok", "", 0, in)
 		return err
 	}
 	// retry until the server accepts
@@ -99,7 +99,7 @@ func TestOpenChatStreamZRPC(t *testing.T) {
 	}
 
 	// wrong token must surface as an auth error on Recv
-	bad, err := OpenChatStream(ctx, addr, "nope", in)
+	bad, err := OpenChatStream(ctx, addr, "nope", "", 0, in)
 	if err != nil {
 		t.Fatalf("bad OpenChatStream err: %v", err)
 	}

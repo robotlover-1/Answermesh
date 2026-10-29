@@ -41,6 +41,12 @@ type BusMetrics struct {
 	OutboxOldestAge prometheus.Gauge
 	OutboxEvents    *prometheus.CounterVec
 	KBCacheLookups  *prometheus.CounterVec
+
+	// LLM 用量账本写入。
+	UsageEnqueueFailures *prometheus.CounterVec
+	UsageWriteFailures   *prometheus.CounterVec
+	UsageEvents          *prometheus.CounterVec
+	UsageQueueDepth      prometheus.Gauge
 }
 
 const (
@@ -238,6 +244,35 @@ func NewBusMetrics(registry *prometheus.Registry) *BusMetrics {
 		Help:        "已发布知识缓存查询结果（outcome=hit|miss|error；版本始终以 MySQL 为准）",
 	}, []string{"outcome"})
 
+	usageEnqueueFailures := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "usage_enqueue_failures_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "用量账本入队失败次数（reason=closed|timeout|canceled|other）",
+	}, []string{"reason"})
+	usageWriteFailures := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "usage_write_failures_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "用量账本数据库写入失败次数（reason=timeout|canceled|db_error）",
+	}, []string{"reason"})
+	usageEvents := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "usage_events_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "用量事件写入结果（source=llm|cache_exact|cache_semantic|blocked|unknown，duplicate=yes|no）",
+	}, []string{"source", "duplicate"})
+	usageQueueLength := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "usage_queue_length",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "用量账本异步入库队列积压条数",
+	})
+
 	registry.MustRegister(questionsTotalCounter, keywordsQuestionsTotalCounter,
 		sensitiveQuestionsTotalCounter, errQuestionsTotalCounter,
 		recordsEnqueueFailures, recordsDBInsertFailures,
@@ -245,7 +280,8 @@ func NewBusMetrics(registry *prometheus.Registry) *BusMetrics {
 		zrpcRequests, zrpcUnaryDuration, zrpcStreamDuration, zrpcStreamActive, zrpcFirstToken,
 		cacheRequests, cacheWrites, llmRequests, llmTokens,
 		mysqlQueries, mysqlQueryDuration, mysqlTxRetries,
-		outboxPending, outboxOldestAge, outboxEvents, kbCacheLookups)
+		outboxPending, outboxOldestAge, outboxEvents, kbCacheLookups,
+		usageEnqueueFailures, usageWriteFailures, usageEvents, usageQueueLength)
 	return &BusMetrics{
 		QuestionsTotalCounter:          questionsTotalCounter,
 		KeywordsQuestionsTotalCounter:  keywordsQuestionsTotalCounter,
@@ -272,6 +308,10 @@ func NewBusMetrics(registry *prometheus.Registry) *BusMetrics {
 		OutboxOldestAge:                outboxOldestAge,
 		OutboxEvents:                   outboxEvents,
 		KBCacheLookups:                 kbCacheLookups,
+		UsageEnqueueFailures:           usageEnqueueFailures,
+		UsageWriteFailures:             usageWriteFailures,
+		UsageEvents:                    usageEvents,
+		UsageQueueDepth:                usageQueueLength,
 	}
 }
 
@@ -317,6 +357,27 @@ func (m *BusMetrics) OutboxEvent(result string) {
 
 func (m *BusMetrics) KBCacheLookup(outcome string) {
 	m.KBCacheLookups.WithLabelValues(outcome).Inc()
+}
+
+// 以下实现 data.UsageObserver。
+func (m *BusMetrics) UsageEnqueueFailure(reason string) {
+	m.UsageEnqueueFailures.WithLabelValues(reason).Inc()
+}
+
+func (m *BusMetrics) UsageWriteFailure(reason string) {
+	m.UsageWriteFailures.WithLabelValues(reason).Inc()
+}
+
+func (m *BusMetrics) UsageWritten(source string, created bool) {
+	dup := "yes"
+	if created {
+		dup = "no"
+	}
+	m.UsageEvents.WithLabelValues(source, dup).Inc()
+}
+
+func (m *BusMetrics) UsageQueueLength(n int) {
+	m.UsageQueueDepth.Set(float64(n))
 }
 
 // 以下方法实现 semcache.Observer。

@@ -43,6 +43,9 @@ type ChatMessageRequest struct {
 type ChatMessageRequestOptions struct {
 	Name            string `json:"name"`
 	ParentMessageId string `json:"parentMessageId"`
+	// 可选：会话 id（先通过 /api/v1/sessions 创建）。非 0 且已登录时，
+	// 服务端会把本轮 user+assistant 最终消息写入 chat_messages。
+	SessionID uint64 `json:"sessionId"`
 }
 
 type ChatMessage struct {
@@ -113,7 +116,9 @@ func (chat *ChatService) ChatProcess(ctx *gin.Context) {
 
 	dep := chat.config.DependOn.AiChatService
 	// 单 zrpc 下游（gRPC 已删）；父 ctx 取 Gin 请求 ctx（浏览器断开 → 取消 → 上游 LLM 释放）
-	stream, err := ai_chat_service.OpenChatStream(ctx.Request.Context(), dep.Address, dep.AccessToken, in)
+	identityToken := chat.mintIdentityToken(ctx)
+	stream, err := ai_chat_service.OpenChatStream(ctx.Request.Context(), dep.Address, dep.AccessToken,
+		identityToken, payload.Options.SessionID, in)
 	if err != nil {
 		chat.log.Error(err)
 		ctx.JSON(200, gin.H{

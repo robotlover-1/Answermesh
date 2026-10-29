@@ -54,6 +54,9 @@ cd /home/pp/Desktop/ls_study/proj/9.1-kvstore/monitoring
   `go_goroutines`，以及入库队列指标 `records_enqueue_failures_total{reason}` /
   `records_db_insert_failures_total{reason}` / `records_queue_length`。
   旧 gRPC `requests_total` / `request_duration_ms` / `curr_num_goroutine` 已不再产生数据。
+- 用量账本：`usage_events_total{source,duplicate}`、`usage_enqueue_failures_total{reason}`、
+  `usage_write_failures_total{reason}`、`usage_queue_length`；业务明细落在
+  `llm_usage_events` / `usage_daily`，08 看板直接查 MySQL。
 - 应用指标沿用既有 `ai_chat_chat_service_*` 命名空间（方案文档中的 `answermesh_*` 为示意名），
   避免已有告警/历史数据失效；Token 指标用 `llm_tokens_total{kind="input|output|estimated_saved"}`
   区分模型实际用量与缓存命中估算节省。

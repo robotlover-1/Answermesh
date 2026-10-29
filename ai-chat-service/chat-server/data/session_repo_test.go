@@ -52,6 +52,8 @@ func setupDB(t *testing.T) (*sql.DB, uint64) {
 		_, _ = db.Exec("DELETE FROM cache_outbox WHERE entry_id IN (SELECT id FROM knowledge_entries WHERE tenant_id=?)", tenant)
 		_, _ = db.Exec("DELETE FROM knowledge_entries WHERE tenant_id=?", tenant)
 		_, _ = db.Exec("DELETE FROM chat_sessions WHERE tenant_id=?", tenant)
+		_, _ = db.Exec("DELETE FROM usage_daily WHERE tenant_id=?", tenant)
+		_, _ = db.Exec("DELETE FROM llm_usage_events WHERE tenant_id=?", tenant)
 		_ = db.Close()
 	})
 	return db, tenant
