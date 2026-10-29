@@ -55,15 +55,17 @@ type chatService struct {
 	busMetrics *metrics_bus.BusMetrics
 
 	// 可选依赖：未注入时聊天主链路保持原行为（不记用量、不写会话历史）。
-	sessions *data.SessionRepository
-	usage    *data.UsageRecorder
-	identity *identity.Verifier
+	sessions  *data.SessionRepository
+	usage     *data.UsageRecorder
+	identity  *identity.Verifier
+	knowledge *data.KnowledgeService
 }
 
 type ChatDeps struct {
-	Sessions *data.SessionRepository
-	Usage    *data.UsageRecorder
-	Identity *identity.Verifier
+	Sessions  *data.SessionRepository
+	Usage     *data.UsageRecorder
+	Identity  *identity.Verifier
+	Knowledge *data.KnowledgeService
 }
 
 func NewChatService(data data.IChatRecordsData, config *config.Config, log log.ILogger, busMetrics *metrics_bus.BusMetrics) ChatSvc {
@@ -80,6 +82,7 @@ func NewChatServiceWithDeps(data data.IChatRecordsData, config *config.Config, l
 		sessions:   deps.Sessions,
 		usage:      deps.Usage,
 		identity:   deps.Identity,
+		knowledge:  deps.Knowledge,
 	}
 }
 
@@ -120,6 +123,16 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 			data.UsageStatusSuccess, data.UsageTokenSourceNone, 0, 0, 0, start)
 		res := app.buildChatCompletionResponse(msg)
 		return res, nil
+	}
+
+	// 已审核发布知识优先于语义缓存/LLM（版本指针以 MySQL 为准）。
+	if ans, ok := s.knowledgeAnswer(ctx, claims, meta); ok {
+		saved := estimateTokensRough(in.Message) + estimateTokensRough(ans)
+		s.recordUsage(claims, meta, requestID, data.UsageSourceKnowledge,
+			data.UsageStatusSuccess, data.UsageTokenSourceNone, 0, 0, saved, start)
+		s.appendConversation(claims, meta, requestID, data.UsageSourceKnowledge, in.Message,
+			estimateTokensRough(in.Message), ans, estimateTokensRough(ans))
+		return app.buildChatCompletionResponse(ans), nil
 	}
 
 	// 语义缓存：命中直接返回历史答案（不调大模型）
@@ -274,6 +287,22 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 			s.log.Error(err)
 			return err
 		}
+		return nil
+	}
+
+	// 已审核发布知识优先于语义缓存/LLM。
+	if ans, ok := s.knowledgeAnswer(stream.Context(), claims, meta); ok {
+		saved := estimateTokensRough(in.Message) + estimateTokensRough(ans)
+		s.recordUsage(claims, meta, requestID, data.UsageSourceKnowledge,
+			data.UsageStatusSuccess, data.UsageTokenSourceNone, 0, 0, saved, start)
+		s.appendConversation(claims, meta, requestID, data.UsageSourceKnowledge, in.Message,
+			estimateTokensRough(in.Message), ans, estimateTokensRough(ans))
+		resId := uuid.New().String()
+		_ = stream.Send(app.withSource(app.buildChatCompletionStreamResponse(resId, "", ""), "knowledge"))
+		for _, res := range app.buildChatCompletionStreamResponseList(resId, ans) {
+			_ = stream.Send(app.withSource(res, "knowledge"))
+		}
+		_ = stream.Send(app.withSource(app.buildChatCompletionStreamResponse(resId, "", "stop"), "knowledge"))
 		return nil
 	}
 

@@ -22,11 +22,19 @@ func TokenForUser(userID uint64) (string, error) {
 	if tenantID == 0 {
 		tenantID = 1
 	}
+	role := "user"
+	for _, id := range cnf.Identity.AdminUserIDs {
+		if id == userID {
+			role = "admin"
+			break
+		}
+	}
 	now := time.Now()
 	return contract.SignIdentity(cnf.Identity.Secret, contract.IdentityClaims{
 		TenantID:  tenantID,
 		UserID:    userID,
 		Issuer:    cnf.Identity.Issuer,
+		Role:      role,
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(tokenTTL).Unix(),
 	})

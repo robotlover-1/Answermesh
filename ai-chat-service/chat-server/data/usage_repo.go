@@ -15,6 +15,7 @@ const (
 	UsageSourceCacheExact    = "cache_exact"
 	UsageSourceCacheSemantic = "cache_semantic"
 	UsageSourceBlocked       = "blocked"
+	UsageSourceKnowledge     = "knowledge"
 	UsageSourceUnknown       = "unknown"
 
 	UsageStatusSuccess   = "success"
@@ -52,7 +53,7 @@ func (e *UsageEvent) normalize() error {
 		return fmt.Errorf("%w: tenant/user required", ErrInvalidArgument)
 	}
 	switch e.Source {
-	case UsageSourceLLM, UsageSourceCacheExact, UsageSourceCacheSemantic, UsageSourceBlocked, UsageSourceUnknown:
+	case UsageSourceLLM, UsageSourceCacheExact, UsageSourceCacheSemantic, UsageSourceBlocked, UsageSourceKnowledge, UsageSourceUnknown:
 	default:
 		e.Source = UsageSourceUnknown
 	}

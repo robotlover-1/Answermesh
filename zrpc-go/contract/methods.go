@@ -14,4 +14,10 @@ const (
 	MethodSessionDelete      = "session.delete"
 	MethodMessageList        = "message.list"
 	MethodConversationAppend = "conversation.append"
+
+	MethodKnowledgeCreate       = "knowledge.create"
+	MethodKnowledgeSubmit       = "knowledge.submit"
+	MethodKnowledgeReview       = "knowledge.review"
+	MethodKnowledgePublish      = "knowledge.publish"
+	MethodKnowledgeGetPublished = "knowledge.get_published"
 )

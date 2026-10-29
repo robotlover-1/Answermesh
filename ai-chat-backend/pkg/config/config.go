@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -58,6 +59,8 @@ type Config struct {
 		Secret   string `mapstructure:"secret"`
 		Issuer   string `mapstructure:"issuer"`
 		TenantID uint64 `mapstructure:"tenant_id"`
+		// AdminUserIDs 中的用户签发 role=admin，其余为 user。
+		AdminUserIDs []uint64 `mapstructure:"admin_user_ids"`
 	}
 	Tokenizer struct {
 		Address string
@@ -117,6 +120,15 @@ func applyEnvOverrides(c *Config) {
 	}
 	if c.Identity.Issuer == "" {
 		c.Identity.Issuer = "answermesh-backend"
+	}
+	if v := os.Getenv("AI_CHAT_IDENTITY_ADMIN_USER_IDS"); v != "" {
+		ids := []uint64{}
+		for _, part := range strings.Split(v, ",") {
+			if id, err := strconv.ParseUint(strings.TrimSpace(part), 10, 64); err == nil && id > 0 {
+				ids = append(ids, id)
+			}
+		}
+		c.Identity.AdminUserIDs = ids
 	}
 }
 

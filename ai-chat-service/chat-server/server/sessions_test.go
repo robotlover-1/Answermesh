@@ -2,52 +2,22 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
 	"ai-chat-service/chat-server/data"
-	"ai-chat-service/db/migrations"
-	"ai-chat-service/pkg/db/migrate"
 	"ai-chat-service/pkg/identity"
 	zrpc "echo-zrpc-go"
 	"echo-zrpc-go/contract"
-
-	_ "github.com/go-sql-driver/mysql"
 )
 
 const sessionTestSecret = "0123456789abcdef0123456789abcdef"
 
 func newSessionServiceWithDB(t *testing.T) (*sessionService, uint64) {
 	t.Helper()
-	dsn := os.Getenv("MYSQL_TEST_DSN")
-	if dsn == "" {
-		t.Skip("MYSQL_TEST_DSN not set")
-	}
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		t.Fatal(err)
-	}
-	migs, err := migrate.Load(migrations.FS)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := migrate.Apply(ctx, db, migs); err != nil {
-		t.Fatal(err)
-	}
-	tenant := uint64(time.Now().UnixNano())
-	t.Cleanup(func() {
-		_, _ = db.Exec("DELETE FROM chat_sessions WHERE tenant_id=?", tenant)
-		_ = db.Close()
-	})
+	db, tenant := setupServerDB(t)
 	return &sessionService{
 		repo:     data.NewSessionRepository(db, nil),
 		verifier: identity.NewVerifier(sessionTestSecret, "answermesh-backend"),

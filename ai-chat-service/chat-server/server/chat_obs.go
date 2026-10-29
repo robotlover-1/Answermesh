@@ -14,16 +14,18 @@ import (
 // chatMeta 是 zRPC 传输层解析出的可选请求元数据；通过 context 传给业务层，
 // 不修改 proto DTO，也不出现在日志里。
 type chatMeta struct {
-	IdentityToken string
-	SessionID     uint64
+	IdentityToken    string
+	SessionID        uint64
+	KnowledgeEntryID uint64
 }
 
 type chatMetaKey struct{}
 
 func withChatMeta(ctx context.Context, req *contract.ChatCompletionRequest) context.Context {
 	return context.WithValue(ctx, chatMetaKey{}, chatMeta{
-		IdentityToken: req.IdentityToken,
-		SessionID:     req.SessionID,
+		IdentityToken:    req.IdentityToken,
+		SessionID:        req.SessionID,
+		KnowledgeEntryID: req.KnowledgeEntryID,
 	})
 }
 
@@ -106,6 +108,23 @@ func (s *chatService) appendConversation(claims *contract.IdentityClaims, meta c
 	if err != nil {
 		s.log.ErrorF("append conversation failed: %v", err)
 	}
+}
+
+// knowledgeAnswer 尝试命中“已审核发布的知识”。版本与租户校验在 MySQL/缓存层完成；
+// 未发布/不存在时返回 ok=false 并继续走语义缓存/LLM。
+func (s *chatService) knowledgeAnswer(ctx context.Context, claims *contract.IdentityClaims, meta chatMeta) (string, bool) {
+	if s.knowledge == nil || claims == nil || meta.KnowledgeEntryID == 0 {
+		return "", false
+	}
+	ans, err := s.knowledge.PublishedAnswer(ctx, claims.TenantID, meta.KnowledgeEntryID)
+	if err != nil {
+		if !errors.Is(err, data.ErrNotPublished) && !errors.Is(err, data.ErrEntryNotFound) &&
+			!errors.Is(err, data.ErrVersionNotFound) {
+			s.log.ErrorF("knowledge lookup failed: %v", err)
+		}
+		return "", false
+	}
+	return ans, ans != ""
 }
 
 // unaryIdentity 是 ChatCompletion 入口的便捷封装（保持旧调用点简洁）。

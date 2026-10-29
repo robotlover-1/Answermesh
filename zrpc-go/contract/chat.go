@@ -18,6 +18,8 @@ type ChatCompletionRequest struct {
 	IdentityToken string `json:"identity_token,omitempty"`
 	// 可选：非 0 时在响应完成后把 user+assistant 最终消息写入 chat_messages（幂等）。
 	SessionID uint64 `json:"session_id,omitempty"`
+	// 可选：命中已发布知识时优先返回，不再调用语义缓存/LLM。
+	KnowledgeEntryID uint64 `json:"knowledge_entry_id,omitempty"`
 }
 
 // ChatParam mirrors proto.ChatParam (per-request override of chat defaults).

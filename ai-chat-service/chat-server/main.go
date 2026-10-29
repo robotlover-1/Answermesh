@@ -129,19 +129,30 @@ func main() {
 	redis.InitRedisPool(cnf)
 	recordsData := data.NewChatRecordsData(mysql.GetDB(), busMetrics)
 
+	identityVerifier := identity.NewVerifier(cnf.Identity.Secret, cnf.Identity.Issuer)
+	if !identityVerifier.Configured() {
+		log.ErrorF("identity secret is empty: chat usage/session and session APIs will be limited (set AI_CHAT_IDENTITY_SECRET)")
+	}
+	sessionRepo := data.NewSessionRepository(mysql.GetDB(), busMetrics)
+	usageRepo := data.NewUsageRepository(mysql.GetDB(), busMetrics)
+	usageRecorder := data.NewUsageRecorder(usageRepo, busMetrics)
+	knowledgeRepo := data.NewKnowledgeRepository(mysql.GetDB(), busMetrics)
+	knowledgeCache := kbcache.New()
+	cacheTTL := time.Duration(cnf.KnowledgeOutbox.CacheTTLSeconds) * time.Second
+	knowledgeRead := data.NewKnowledgeService(knowledgeRepo, knowledgeCache, cacheTTL, busMetrics)
+
 	// 知识发布 Outbox Worker：与请求路径解耦，失败按租约/退避重试。
 	var workerCancel context.CancelFunc
 	var workerDone chan struct{}
 	if cnf.KnowledgeOutbox.Enabled {
 		outboxRepo := data.NewOutboxRepository(mysql.GetDB(), busMetrics)
-		knowledgeRepo := data.NewKnowledgeRepository(mysql.GetDB(), busMetrics)
-		ow := worker.NewOutboxWorker(outboxRepo, knowledgeRepo, kbcache.New(), busMetrics,
+		ow := worker.NewOutboxWorker(outboxRepo, knowledgeRepo, knowledgeCache, busMetrics,
 			worker.OutboxConfig{
 				Interval:    time.Duration(cnf.KnowledgeOutbox.IntervalSeconds) * time.Second,
 				Lease:       time.Duration(cnf.KnowledgeOutbox.LeaseSeconds) * time.Second,
 				BatchSize:   cnf.KnowledgeOutbox.BatchSize,
 				MaxAttempts: cnf.KnowledgeOutbox.MaxAttempts,
-				CacheTTL:    time.Duration(cnf.KnowledgeOutbox.CacheTTLSeconds) * time.Second,
+				CacheTTL:    cacheTTL,
 			})
 		workerCtx, cancel := context.WithCancel(context.Background())
 		workerCancel = cancel
@@ -154,19 +165,12 @@ func main() {
 		}()
 	}
 
-	identityVerifier := identity.NewVerifier(cnf.Identity.Secret, cnf.Identity.Issuer)
-	if !identityVerifier.Configured() {
-		log.ErrorF("identity secret is empty: chat usage/session and session APIs will be limited (set AI_CHAT_IDENTITY_SECRET)")
-	}
-	sessionRepo := data.NewSessionRepository(mysql.GetDB(), busMetrics)
-	usageRepo := data.NewUsageRepository(mysql.GetDB(), busMetrics)
-	usageRecorder := data.NewUsageRecorder(usageRepo, busMetrics)
-
 	// 单 zrpc 传输（gRPC 已删）：业务端口即 cnf.Server.Port（50055）
 	service := server.NewChatServiceWithDeps(recordsData, cnf, logger, busMetrics, server.ChatDeps{
-		Sessions: sessionRepo,
-		Usage:    usageRecorder,
-		Identity: identityVerifier,
+		Sessions:  sessionRepo,
+		Usage:     usageRecorder,
+		Identity:  identityVerifier,
+		Knowledge: knowledgeRead,
 	})
 	zsrv, err := zrpc.NewServer(zrpc.ServerOptions{
 		Address:     fmt.Sprintf("%s:%d", cnf.Server.IP, cnf.Server.Port),
@@ -179,6 +183,9 @@ func main() {
 		fatalStartup("%v", err)
 	}
 	if err := server.RegisterSessionZRPC(zsrv, sessionRepo, identityVerifier, busMetrics); err != nil {
+		fatalStartup("%v", err)
+	}
+	if err := server.RegisterKnowledgeZRPC(zsrv, knowledgeRepo, knowledgeRead, identityVerifier, busMetrics); err != nil {
 		fatalStartup("%v", err)
 	}
 	if err := zsrv.Serve(); err != nil {

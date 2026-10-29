@@ -25,7 +25,7 @@ type ChatStream interface {
 
 // OpenChatStream 打开一条 ChatCompletionStream（zrpc）。
 // identityToken/sessionID 可选：非空时服务端会记录用量并把最终消息写入会话历史。
-func OpenChatStream(ctx context.Context, address, token, identityToken string, sessionID uint64,
+func OpenChatStream(ctx context.Context, address, token, identityToken string, sessionID, knowledgeEntryID uint64,
 	in *ai_chat_service_proto.ChatCompletionRequest) (ChatStream, error) {
 
 	cli, err := zrpc.NewClient(clientOptionsFromAddress(address, token))
@@ -35,6 +35,7 @@ func OpenChatStream(ctx context.Context, address, token, identityToken string, s
 	req := contractReqFromProto(in)
 	req.IdentityToken = identityToken
 	req.SessionID = sessionID
+	req.KnowledgeEntryID = knowledgeEntryID
 	st, err := cli.Stream(ctx, contract.MethodChatCompletionStream, req)
 	if err != nil {
 		cli.Close()

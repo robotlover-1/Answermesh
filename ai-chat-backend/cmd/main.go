@@ -59,6 +59,18 @@ func (r *ChatGPTWebServer) httpServer(ctx context.Context) {
 	sessions.DELETE("/:id", chatService.DeleteSession)
 	sessions.GET("/:id/messages", chatService.ListMessages)
 	sessions.POST("/:id/messages", chatService.AppendConversation)
+
+	// 知识审核/发布（写操作由服务端校验 admin 角色）；只读已发布知识对登录用户开放。
+	adminKnowledge := chat.Group("/v1/admin/knowledge")
+	adminKnowledge.Use(middlewares.AuthMiddleware())
+	adminKnowledge.POST("", chatService.CreateKnowledge)
+	adminKnowledge.POST("/:id/versions", chatService.SubmitKnowledge)
+	adminKnowledge.POST("/:id/versions/:version/review", chatService.ReviewKnowledge)
+	adminKnowledge.POST("/:id/versions/:version/publish", chatService.PublishKnowledge)
+
+	knowledge := chat.Group("/v1/knowledge")
+	knowledge.Use(middlewares.AuthMiddleware())
+	knowledge.GET("/:id", chatService.GetPublishedKnowledge)
 	chat.POST("/config", func(ctx *gin.Context) {
 		ctx.JSON(200, gin.H{
 			"status": "Success",

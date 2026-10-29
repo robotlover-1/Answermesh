@@ -41,3 +41,4 @@ identity:
   secret: "${AI_CHAT_IDENTITY_SECRET}"
   issuer: "answermesh-backend"
   tenant_id: 1
+  admin_user_ids: []

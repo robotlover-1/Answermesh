@@ -25,9 +25,11 @@ var (
 )
 
 type IdentityClaims struct {
-	TenantID  uint64 `json:"tenant_id"`
-	UserID    uint64 `json:"user_id"`
-	Issuer    string `json:"iss,omitempty"`
+	TenantID uint64 `json:"tenant_id"`
+	UserID   uint64 `json:"user_id"`
+	Issuer   string `json:"iss,omitempty"`
+	// Role 由 backend 依据管理员配置签发：user|admin。服务端据此做写操作授权。
+	Role      string `json:"role,omitempty"`
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
 }

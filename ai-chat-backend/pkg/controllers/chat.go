@@ -46,6 +46,8 @@ type ChatMessageRequestOptions struct {
 	// 可选：会话 id（先通过 /api/v1/sessions 创建）。非 0 且已登录时，
 	// 服务端会把本轮 user+assistant 最终消息写入 chat_messages。
 	SessionID uint64 `json:"sessionId"`
+	// 可选：已发布知识 entry id，命中时优先返回知识答案。
+	KnowledgeEntryID uint64 `json:"knowledgeEntryId"`
 }
 
 type ChatMessage struct {
@@ -118,7 +120,7 @@ func (chat *ChatService) ChatProcess(ctx *gin.Context) {
 	// 单 zrpc 下游（gRPC 已删）；父 ctx 取 Gin 请求 ctx（浏览器断开 → 取消 → 上游 LLM 释放）
 	identityToken := chat.mintIdentityToken(ctx)
 	stream, err := ai_chat_service.OpenChatStream(ctx.Request.Context(), dep.Address, dep.AccessToken,
-		identityToken, payload.Options.SessionID, in)
+		identityToken, payload.Options.SessionID, payload.Options.KnowledgeEntryID, in)
 	if err != nil {
 		chat.log.Error(err)
 		ctx.JSON(200, gin.H{
@@ -142,7 +144,7 @@ func (chat *ChatService) ChatProcess(ctx *gin.Context) {
 			rt, err2 := tokenizer.GetTokenCount(respMsg, chat.config.Chat.Model)
 			// 只统计用量用于前端展示，不再扣减额度（额度限制已移除）。
 			if err1 == nil && err2 == nil {
-				if result.Source == "cache" {
+				if result.Source == "cache" || result.Source == "knowledge" {
 					result.TokensSaved = pt + rt
 				} else {
 					result.TokensUsed = pt + rt
