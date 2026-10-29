@@ -1,0 +1,114 @@
+groups:
+  - name: pocketkv
+    rules:
+      - alert: PocketKVExporterDown
+        expr: up{job="pocketkv"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "PocketKV 抓取目标不可达（{{ $labels.instance }}）"
+      - alert: PocketKVScrapeFailing
+        expr: pocketkv_exporter_scrape_success == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Exporter 无法读取 PocketKV INFO/MEMSTAT（{{ $labels.instance }}）"
+      - alert: PocketKVAOFFatal
+        expr: pocketkv_aof_fatal > 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "PocketKV AOF 线程 fatal，复制数据只进内存不落盘（{{ $labels.instance }}）"
+      - alert: PocketKVCommitGateGap
+        expr: increase(pocketkv_commit_gap_total[5m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Commit Gate 出现复制缺口（{{ $labels.instance }}）"
+      - alert: PocketKVCommitGateDesync
+        expr: increase(pocketkv_commit_desync_total[5m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Commit Gate 失步（{{ $labels.instance }}）"
+      - alert: PocketKVRDMAErrors
+        expr: increase(pocketkv_rdma_cq_errors_total[5m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "RDMA CQ 错误增长（{{ $labels.instance }}）"
+      - alert: PocketKVRDMAFullsyncStuck
+        expr: pocketkv_rdma_fullsync_jobs{state="sending"} > 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "RDMA fullsync 长时间停留在 sending（{{ $labels.instance }}）"
+      - alert: PocketKVReplicaAckStale
+        expr: pocketkv_replication_min_ack_age_seconds > 30
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "副本 REPLACK 已超过 30s 未更新（{{ $labels.instance }}）"
+      - alert: PocketKVAOFLag
+        expr: (pocketkv_aof_submitted_bytes - pocketkv_aof_written_bytes) > 64 * 1024 * 1024
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "AOF 已提交但未落盘超过 64MiB（{{ $labels.instance }}）"
+
+  - name: answermesh
+    rules:
+      - alert: AnswerMeshMetricsDown
+        expr: up{job="answermesh"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "ai-chat-service /metrics 不可达"
+      - alert: AnswerMeshZRPCErrorRate
+        expr: |
+          sum(rate(ai_chat_chat_service_zrpc_requests_total{result="error"}[5m]))
+            /
+          sum(rate(ai_chat_chat_service_zrpc_requests_total[5m])) > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "zRPC 错误率超过 5%"
+      - alert: AnswerMeshDBInsertFailures
+        expr: increase(ai_chat_chat_service_records_db_insert_failures_total[5m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "chat_records 数据库写入持续失败（{{ $labels.reason }}）"
+      - alert: AnswerMeshRecordQueueBacklog
+        expr: ai_chat_chat_service_records_queue_length > 1024
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "chat_records 入库队列积压超过 1024"
+
+  - name: mysql
+    rules:
+      - alert: MySQLExporterDown
+        expr: up{job="mysql"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "mysqld_exporter 不可达"
+      - alert: MySQLThreadsRunningHigh
+        expr: mysql_global_status_threads_running > 50
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "MySQL 并发运行线程超过 50"
+      - alert: MySQLConnectionSaturation
+        expr: |
+          mysql_global_status_threads_connected
+            /
+          mysql_global_variables_max_connections > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "MySQL 连接使用率超过 80%"
+      - alert: MySQLLockWaits
+        expr: increase(mysql_global_status_innodb_row_lock_waits[5m]) > 10
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "InnoDB 行锁等待增长"

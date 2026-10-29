@@ -42,6 +42,49 @@ start_graf() {
   echo "  [grafana] ✘ 启动失败, 日志尾部:"; tail -n 8 "$LOG_DIR/grafana.log" | sed 's/^/    /'; return 1
 }
 
+# 启动一个常驻进程并等待端口就绪；失败只告警，不影响 Prometheus/Grafana。
+start_daemon() {
+  local name="$1" port="$2" log="$3"; shift 3
+  if port_listening "$port"; then echo "  [$name] ✔ already running ($port)"; return 0; fi
+  ( cd "$ROOT" && nohup "$@" >"$LOG_DIR/$log" 2>&1 & echo $! > "$PID_DIR/$name.pid" )
+  local i
+  for i in $(seq 1 20); do port_listening "$port" && { echo "  [$name] ✔ $port listening"; return 0; }; sleep 0.25; done
+  echo "  [$name] ✘ 启动失败, 日志尾部:"; tail -n 5 "$LOG_DIR/$log" 2>/dev/null | sed 's/^/    /'; rm -f "$PID_DIR/$name.pid"; return 1
+}
+
+# PocketKV Exporter：本地若已运行 5160/5161/5162，则分别映射到 9401/9402/9403。
+# 端口/角色可用 POCKETKV_EXPORTER_PORTS / POCKETKV_EXPORTER_LISTEN 覆盖（空格分隔）。
+start_pocketkv_exporters() {
+  local bin="$ROOT/exporters/pocketkv-exporter/bin/pocketkv-exporter"
+  [ -x "$bin" ] || { echo "  [pocketkv-exporter] 未构建，跳过（make -C exporters/pocketkv-exporter build）"; return 0; }
+  local ports=(${POCKETKV_EXPORTER_PORTS:-5160 5161 5162})
+  local listen=(${POCKETKV_EXPORTER_LISTEN:-9401 9402 9403})
+  local roles=(master slave slave)
+  local i
+  for i in "${!ports[@]}"; do
+    [ "${i}" -lt "${#listen[@]}" ] || break
+    port_listening "${ports[$i]}" || continue
+    start_daemon "pocketkv-exporter-${listen[$i]}" "${listen[$i]}" "pocketkv-exporter-${listen[$i]}.log" \
+      "$bin" --target="127.0.0.1:${ports[$i]}" --listen="127.0.0.1:${listen[$i]}" --role="${roles[$i]:-auto}"
+  done
+}
+
+# 可选外部 exporter：二进制存在才启动。
+start_optional_exporters() {
+  if [ -x "$ROOT/bin/mysqld_exporter" ]; then
+    local cnf_args=()
+    [ -f "$ROOT/config/mysqld_exporter.cnf" ] && cnf_args=(--config.my-cnf="$ROOT/config/mysqld_exporter.cnf")
+    start_daemon mysqld_exporter 9104 "mysqld_exporter.log" \
+      "$ROOT/bin/mysqld_exporter" "${cnf_args[@]}" --web.listen-address=127.0.0.1:9104
+  fi
+  if [ -x "$ROOT/bin/node_exporter" ]; then
+    start_daemon node_exporter 9100 "node_exporter.log" \
+      "$ROOT/bin/node_exporter" --web.listen-address=127.0.0.1:9100
+  fi
+}
+
+start_pocketkv_exporters
+start_optional_exporters
 start_prom
 start_graf
 echo

@@ -1,0 +1,224 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 0,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "mysql",
+        "uid": "mysql"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mysql",
+            "uid": "mysql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(created_at, '1d'),\n  SUM(CASE WHEN source='llm' THEN 1 ELSE 0 END) AS llm_calls,\n  SUM(CASE WHEN source LIKE 'cache%' THEN 1 ELSE 0 END) AS cache_hits\nFROM llm_usage_events\nWHERE $__timeFilter(created_at)\nGROUP BY 1\nORDER BY 1;",
+          "refId": "A"
+        }
+      ],
+      "title": "每日模型调用量（llm_usage_events）",
+      "type": "timeseries",
+      "description": "需要先执行 db/migrations 中的 llm_usage_events 迁移。"
+    },
+    {
+      "datasource": {
+        "type": "mysql",
+        "uid": "mysql"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mysql",
+            "uid": "mysql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(created_at, '1d'),\n  SUM(input_tokens + output_tokens) AS actual_tokens,\n  SUM(estimated_saved_tokens) AS estimated_saved_tokens\nFROM llm_usage_events\nWHERE $__timeFilter(created_at)\nGROUP BY 1\nORDER BY 1;",
+          "refId": "A"
+        }
+      ],
+      "title": "真实 tokens vs 估算节省（30 天）",
+      "type": "timeseries",
+      "description": "实际用量与缓存节省估算分属两条曲线，不可相加作为账单。"
+    },
+    {
+      "datasource": {
+        "type": "mysql",
+        "uid": "mysql"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 3,
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mysql",
+            "uid": "mysql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  review_status,\n  COUNT(*) AS versions,\n  MIN(created_at) AS oldest\nFROM knowledge_versions\nGROUP BY review_status\nORDER BY versions DESC;",
+          "refId": "A"
+        }
+      ],
+      "title": "知识审核队列（近似实时）",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "mysql",
+        "uid": "mysql"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 4,
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mysql",
+            "uid": "mysql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  status,\n  COUNT(*) AS jobs,\n  MIN(created_at) AS oldest_created,\n  SUM(attempts) AS total_attempts\nFROM cache_outbox\nGROUP BY status\nORDER BY jobs DESC;",
+          "refId": "A"
+        }
+      ],
+      "title": "Outbox 积压",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "mysql",
+        "uid": "mysql"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mysql",
+            "uid": "mysql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(created_at, '1d'),\n  COUNT(*) AS messages\nFROM chat_messages\nWHERE $__timeFilter(created_at)\nGROUP BY 1\nORDER BY 1;",
+          "refId": "A"
+        }
+      ],
+      "title": "每日消息量（chat_messages）",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": [
+    "mysql",
+    "business"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "08 MySQL 业务",
+  "uid": "mysql-business",
+  "version": 1
+}

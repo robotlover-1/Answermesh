@@ -12,7 +12,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "id": 1,
       "options": { "legend": { "calcs": [], "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single", "sort": "none" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(ai_chat_chat_service_requests_total[5m])", "legendFormat": "{{full_method}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (method) (rate({__name__=~\"ai_chat_chat_service_zrpc_(unary|stream)_duration_seconds_count\"}[5m]))", "legendFormat": "{{method}}", "refId": "A" } ],
       "title": "请求速率",
       "type": "timeseries"
     },
@@ -48,11 +48,11 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "id": 5,
       "options": { "legend": { "calcs": [], "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single", "sort": "none" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "ai_chat_chat_service_request_duration_ms{quantile=\"0.9\"}", "legendFormat": "{{full_method}}", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.9, sum by (le, method) (rate({__name__=~\"ai_chat_chat_service_zrpc_(unary|stream)_duration_seconds_bucket\"}[5m])))", "legendFormat": "{{method}}", "refId": "A" } ],
       "title": "请求延迟 p90",
       "type": "timeseries"
     },
@@ -62,8 +62,31 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "id": 6,
       "options": { "legend": { "calcs": [], "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single", "sort": "none" } },
-      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "ai_chat_chat_service_curr_num_goroutine", "legendFormat": "goroutines", "refId": "A" } ],
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "go_goroutines", "legendFormat": "goroutines", "refId": "A" } ],
       "title": "goroutine 数",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 7,
+      "options": { "legend": { "calcs": [], "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single", "sort": "none" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "ai_chat_chat_service_records_queue_length", "legendFormat": "queue length", "refId": "A" } ],
+      "title": "入库队列积压",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "id": 8,
+      "options": { "legend": { "calcs": [], "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single", "sort": "none" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (reason) (rate(ai_chat_chat_service_records_enqueue_failures_total[5m]))", "legendFormat": "enqueue {{reason}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (reason) (rate(ai_chat_chat_service_records_db_insert_failures_total[5m]))", "legendFormat": "db insert {{reason}}", "refId": "B" }
+      ],
+      "title": "入库失败（入队 vs 数据库）",
       "type": "timeseries"
     }
   ],

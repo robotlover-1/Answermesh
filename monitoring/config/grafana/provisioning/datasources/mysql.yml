@@ -1,0 +1,22 @@
+apiVersion: 1
+
+# Grafana 直接以只读账号查询 MySQL（不经过 Prometheus）。
+# 账号示例见 monitoring/README.md；只授予 SELECT，且优先授予 vw_* / 预聚合表。
+# 启动 Grafana 前导出 MYSQL_RO_HOST / MYSQL_RO_DB / MYSQL_RO_USER / MYSQL_RO_PASSWORD。
+datasources:
+  - name: MySQL
+    uid: mysql
+    type: mysql
+    access: proxy
+    url: $MYSQL_RO_HOST:3306
+    database: $MYSQL_RO_DB
+    user: $MYSQL_RO_USER
+    isDefault: false
+    editable: false
+    jsonData:
+      maxOpenConns: 4
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+      timezone: UTC
+    secureJsonData:
+      password: $MYSQL_RO_PASSWORD
