@@ -2,6 +2,10 @@ server:
   ip: 0.0.0.0
   port: 50051
   accessToken: "${AI_CHAT_SERVER_ACCESS_TOKEN}"
+  # 容器内探活与（可能存在的）同网络 Prometheus 抓取需要非 loopback 监听；
+  # 仅允许 compose 内网访问，不要直接把该端口发布到公网。
+  metrics_addr: "0.0.0.0:8080"
+  metrics_access_token: "${AI_CHAT_METRICS_TOKEN}"
 log:
   # panic,fatal,error,warn,warning,info,debug,trace
   level: "info"

@@ -17,10 +17,35 @@ import (
 	"github.com/google/uuid"
 	"github.com/sashabaranov/go-openai"
 	"io"
+	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 )
+
+const llmProvider = "openai_compatible"
+
+// estimateTokensRough 仅用于缓存命中时的“估算节省 token”；
+// 不用于计费、不写入权威用量。ASCII 约 4 字符/token，CJK 约 0.6 token/字符。
+func estimateTokensRough(s string) int {
+	if s == "" {
+		return 0
+	}
+	ascii, cjk, other := 0, 0, 0
+	for _, r := range s {
+		switch {
+		case r < utf8.RuneSelf:
+			ascii++
+		case r >= 0x2E80 && r <= 0x9FFF, r >= 0xF900 && r <= 0xFAFF:
+			cjk++
+		default:
+			other++
+		}
+	}
+	return int(math.Ceil(float64(ascii)/4 + float64(cjk)*0.6 + float64(other)*0.5))
+}
 
 type chatService struct {
 	config     *config.Config
@@ -44,7 +69,8 @@ func (s *chatService) enqueueRecord(records *data.ChatRecord) {
 	addCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	if err := s.data.Add(addCtx, records); err != nil {
-		s.busMetrics.RecordsWriteErrorsCounter.Inc()
+		// 入队失败已由 data 层按 reason 计入 records_enqueue_failures_total；
+		// 这里只记录日志，避免同一失败被重复计数。
 		s.log.Error(err)
 	}
 }
@@ -67,6 +93,8 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 
 	// 语义缓存：命中直接返回历史答案（不调大模型）
 	if cachedAns, hit := semcache.CacheQuery(ctx, in.Message); hit {
+		s.busMetrics.LLMToken("estimated_saved",
+			estimateTokensRough(in.Message)+estimateTokensRough(cachedAns))
 		return app.buildChatCompletionResponse(cachedAns), nil
 	}
 
@@ -82,9 +110,15 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 	}
 	resp, err := client.CreateChatCompletion(ctx, req)
 	if err != nil {
+		s.busMetrics.LLMRequest(llmProvider, "error")
 		s.log.Error(err)
 		return nil, err
 	}
+	s.busMetrics.LLMRequest(llmProvider, "ok")
+	// 只有模型返回 usage 的 unary 路径记录实际 token；缓存节省量单独用 estimated_saved。
+	// （usage 为 0 时 LLMToken 会忽略，避免把“未返回 usage”伪装成 0 消耗。）
+	s.busMetrics.LLMToken("input", resp.Usage.PromptTokens)
+	s.busMetrics.LLMToken("output", resp.Usage.CompletionTokens)
 	res := &proto.ChatCompletionResponse{}
 	bytes, err := json.Marshal(resp)
 	if err != nil {
@@ -183,6 +217,8 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 
 	// 语义缓存：命中直接返回历史答案（不调大模型），标注来源 cache
 	if cachedAns, hit := semcache.CacheQuery(stream.Context(), in.Message); hit {
+		s.busMetrics.LLMToken("estimated_saved",
+			estimateTokensRough(in.Message)+estimateTokensRough(cachedAns))
 		resId := uuid.New().String()
 		startRes := app.withSource(app.buildChatCompletionStreamResponse(resId, "", ""), "cache")
 		endRes := app.withSource(app.buildChatCompletionStreamResponse(resId, "", "stop"), "cache")
@@ -206,17 +242,25 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 	}
 	// deepseek-v4-flash 偶发整轮只推理不出 content（content 为空）；重试一次提高成功概率。
 	// 只展示正式 content，不把推理过程当答案。
+	// TTFT 从本轮 stream 开始计时，仅在首次拿到正式 content 时记录一次。
+	ttftStart := time.Now()
+	var ttftOnce sync.Once
+	onFirstToken := func() {
+		ttftOnce.Do(func() { reportFirstToken(stream.Context(), time.Since(ttftStart)) })
+	}
 	var completionContent, resultID, lastFinish string
 	for attempt := 0; attempt < 2 && completionContent == ""; attempt++ {
 		if attempt > 0 {
 			s.log.InfoF("retry LLM: previous pass produced no content")
 		}
-		content, rid, fin, serr := app.streamLLMContent(stream.Context(), stream, req)
+		content, rid, fin, serr := app.streamLLMContent(stream.Context(), stream, req, onFirstToken)
 		if serr != nil {
+			s.busMetrics.LLMRequest(llmProvider, "error")
 			s.busMetrics.ErrQuestionsTotalCounter.Inc()
 			s.log.Error(serr)
 			return serr
 		}
+		s.busMetrics.LLMRequest(llmProvider, "ok")
 		completionContent, resultID, lastFinish = content, rid, fin
 	}
 	// 收尾：空内容给兜底提示；length 给截断提示；正常发 stop 收尾包
@@ -315,7 +359,7 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 // streamLLMContent 发起一次原始 SSE 流式请求，把正式 content 逐块发给客户端。
 // 不展示 reasoning_content（思考过程）；只返回累积 content、resultID、最后 finish_reason。
 // 收尾（stop/截断提示/兜底）由调用方处理，以便 content 为空时可整体重试。
-func (a *app) streamLLMContent(ctx context.Context, stream ChatStream, req openai.ChatCompletionRequest) (string, string, string, error) {
+func (a *app) streamLLMContent(ctx context.Context, stream ChatStream, req openai.ChatCompletionRequest, onFirstToken func()) (string, string, string, error) {
 	req.Stream = true
 	httpResp, err := a.streamRawRequest(ctx, req)
 	if err != nil {
@@ -367,6 +411,9 @@ func (a *app) streamLLMContent(ctx context.Context, stream ChatStream, req opena
 		}
 		if text == "" {
 			continue // 纯推理 chunk：跳过
+		}
+		if content == "" && onFirstToken != nil {
+			onFirstToken()
 		}
 		content += text
 		res := a.withSource(a.buildChatCompletionStreamResponse(resultID, text, ""), "llm")

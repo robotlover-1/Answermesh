@@ -32,6 +32,18 @@ func zrpcStatus(err error) string {
 	return "ok"
 }
 
+// ttftReporter 由 zRPC stream wrapper 注入 context；业务层在首个正式 token 到达时调用。
+type ttftReporter func(time.Duration)
+
+type ttftContextKey struct{}
+
+// reportFirstToken 在首个 token 到达时上报 TTFT；没有 wrapper（如测试）时为空操作。
+func reportFirstToken(ctx context.Context, d time.Duration) {
+	if f, ok := ctx.Value(ttftContextKey{}).(ttftReporter); ok && f != nil {
+		f(d)
+	}
+}
+
 // RegisterChatZRPC wires chat methods on a zrpc.Server and records zRPC-level
 // latency/count (current primary transport). Labels only contain method/status.
 func RegisterChatZRPC(zsrv *zrpc.Server, chat ChatSvc, streamOK bool,
@@ -42,8 +54,10 @@ func RegisterChatZRPC(zsrv *zrpc.Server, chat ChatSvc, streamOK bool,
 		unary = func(ctx context.Context, raw json.RawMessage) (any, error) {
 			start := time.Now()
 			resp, err := inner(ctx, raw)
+			status := zrpcStatus(err)
+			bus.ZrpcRequests.WithLabelValues(contract.MethodChatCompletion, "unary", status).Inc()
 			bus.ZrpcUnaryDuration.WithLabelValues(
-				contract.MethodChatCompletion, zrpcStatus(err)).
+				contract.MethodChatCompletion, status).
 				Observe(time.Since(start).Seconds())
 			return resp, err
 		}
@@ -57,9 +71,16 @@ func RegisterChatZRPC(zsrv *zrpc.Server, chat ChatSvc, streamOK bool,
 			inner := stream
 			stream = func(ctx context.Context, raw json.RawMessage, w *zrpc.StreamWriter) error {
 				start := time.Now()
+				method := contract.MethodChatCompletionStream
+				bus.ZrpcStreamActive.WithLabelValues(method).Inc()
+				defer bus.ZrpcStreamActive.WithLabelValues(method).Dec()
+				ctx = context.WithValue(ctx, ttftContextKey{}, ttftReporter(func(d time.Duration) {
+					bus.ZrpcFirstTokenDuration.WithLabelValues(method).Observe(d.Seconds())
+				}))
 				err := inner(ctx, raw, w)
-				bus.ZrpcStreamDuration.WithLabelValues(
-					contract.MethodChatCompletionStream, zrpcStatus(err)).
+				status := zrpcStatus(err)
+				bus.ZrpcRequests.WithLabelValues(method, "stream", status).Inc()
+				bus.ZrpcStreamDuration.WithLabelValues(method, status).
 					Observe(time.Since(start).Seconds())
 				return err
 			}
@@ -81,7 +102,9 @@ func (s *chatService) ServeChatStreamZRPC(ctx context.Context, raw json.RawMessa
 	if err != nil {
 		return zrpc.InvalidArgument(err)
 	}
-	zw := &zrpcChatStream{ctx: w.Context(), w: w}
+	// 使用 handler 收到的 ctx（而不是 w.Context()）：wrapper 在里面注入了 TTFT 上报器，
+	// 两者共享同一取消链；w.Context() 是 runStream 的原始 ctx，拿不到 wrapper 的 value。
+	zw := &zrpcChatStream{ctx: ctx, w: w}
 	if err := s.chatCompletionStream(preq, zw); err != nil {
 		return err // zrpc-go turns it into an ERROR frame unless already ended
 	}

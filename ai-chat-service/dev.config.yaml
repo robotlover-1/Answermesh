@@ -2,6 +2,10 @@ server:
   ip: 0.0.0.0
   port: 50055
   accessToken: "${AI_CHAT_SERVER_ACCESS_TOKEN}"
+  # 健康/指标 HTTP 默认只监听 loopback；跨主机/容器抓取时改为 0.0.0.0:8080，
+  # 并用内网策略 + metrics_access_token 限制来源。
+  metrics_addr: "127.0.0.1:8080"
+  metrics_access_token: "${AI_CHAT_METRICS_TOKEN}"
 log:
   # panic,fatal,error,warn,warning,info,debug,trace
   level: "info"

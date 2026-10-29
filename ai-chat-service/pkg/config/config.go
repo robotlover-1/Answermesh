@@ -14,6 +14,11 @@ type Config struct {
 		Port        int // gRPC business port (kept during the observation period)
 		ZrpcPort    int // zrpc v2 business port (double-stack)
 		AccessToken string
+		// MetricsAddr 健康/指标 HTTP 监听地址。默认仅本机 127.0.0.1:8080；
+		// 容器/内网抓取需显式改成 0.0.0.0:8080，并由网络策略限制来源。
+		MetricsAddr string `mapstructure:"metrics_addr"`
+		// MetricsAccessToken 非空时 /metrics 要求 Authorization: Bearer <token>。
+		MetricsAccessToken string `mapstructure:"metrics_access_token"`
 	}
 	Log struct {
 		Level   string
@@ -143,6 +148,10 @@ func applyEnvOverrides(c *Config) {
 	c.Mysql.DSN = envOverride("AI_CHAT_MYSQL_DSN", expandEnvValue(c.Mysql.DSN))
 	c.Server.AccessToken = envOverride("AI_CHAT_SERVER_ACCESS_TOKEN",
 		expandEnvValue(c.Server.AccessToken))
+	c.Server.MetricsAddr = envOverride("AI_CHAT_METRICS_ADDR",
+		expandEnvValue(c.Server.MetricsAddr))
+	c.Server.MetricsAccessToken = envOverride("AI_CHAT_METRICS_TOKEN",
+		expandEnvValue(c.Server.MetricsAccessToken))
 	c.Chat.ApiKey = envOverride("AI_CHAT_API_KEY", expandEnvValue(c.Chat.ApiKey))
 	if c.Chat.ApiKey == "" {
 		c.Chat.ApiKey = envOverride("OPENAI_API_KEY", "")
