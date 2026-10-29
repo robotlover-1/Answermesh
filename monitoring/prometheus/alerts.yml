@@ -46,6 +46,17 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "副本 REPLACK 已超过 30s 未更新（{{ $labels.instance }}）"
+      - alert: PocketKVAOFErrors
+        expr: increase(pocketkv_aof_error_count_total[5m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "AOF 写/fsync 出现新的错误（{{ $labels.instance }}）"
+      - alert: PocketKVReplicaSlotAckStale
+        expr: pocketkv_replica_ack_age_seconds > 30
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "副本 slot {{ $labels.slot }} REPLACK 超过 30s 未更新"
       - alert: PocketKVAOFLag
         expr: (pocketkv_aof_submitted_bytes - pocketkv_aof_written_bytes) > 64 * 1024 * 1024
         for: 10m

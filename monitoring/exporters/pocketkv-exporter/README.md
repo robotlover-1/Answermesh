@@ -52,6 +52,14 @@ make test           # RESP 分片解析、指标映射、目标断线容错
 | `pocketkv_rdma_{cq_errors,cm_rejects,resource_rejects}_total` | Counter | INFO |
 | `pocketkv_rdma_connected_jobs` | Gauge | INFO |
 | `pocketkv_aof_{submitted,written}_bytes` | Gauge | INFO |
+| `pocketkv_aof_outstanding_batches` | Gauge | INFO |
+| `pocketkv_aof_batch_count_total` | Counter | INFO |
+| `pocketkv_aof_batch_duration_seconds_total` | Counter | INFO（配合 count 求平均） |
+| `pocketkv_aof_error_count_total` | Counter | INFO |
+| `pocketkv_aof_max_batch_age_seconds` | Gauge | INFO |
+| `pocketkv_replica_{applied,durable}_offset_bytes{slot}` | Gauge | INFO（eBPF slot） |
+| `pocketkv_replica_ack_age_seconds{slot}` | Gauge | INFO（eBPF slot） |
+| `pocketkv_replica_transport_state{slot,state}` | Gauge | INFO（固定 state 枚举） |
 | `pocketkv_proxy_recovery_cache_bytes` | Gauge | INFO |
 | `pocketkv_repl_{fullsync,partialsync_ok,partialsync_err}_total` | Counter | INFO |
 | `pocketkv_connected_slaves` / `pocketkv_replicas` | Gauge | INFO |
@@ -80,5 +88,7 @@ Exporter 只监听内网/loopback；不要把 9401 暴露到公网。
 
 ## 限制
 
-v1 只覆盖全局 INFO/MEMSTAT。per-slot 复制 lag、AOF fsync 直方图、RDMA posted/completed
-字节需要 PocketKV 侧新增低开销埋点（见监控方案 3.5），属于后续 v2。
+v2 已增加 per-slot（eBPF slot 0..7）offset/ACK 年龄/传输状态，以及 AOF 批次数、累计
+write+fsync 耗时、在途批次与错误计数（原子累加，不在命令热路径打日志）。RDMA
+posted/completed 字节与 reactor 命令耗时直方图仍需下一轮埋点；AOF 直方图暂以
+count+sum 暴露，Prometheus 侧用 rate 比值得平均耗时。

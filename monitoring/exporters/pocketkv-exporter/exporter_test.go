@@ -103,7 +103,16 @@ func sampleInfo() string {
 		"aof_submitted:100\n" +
 		"aof_written:90\n" +
 		"aof_fatal:1\n" +
+		"aof_outstanding:2\n" +
+		"aof_batch_count:10\n" +
+		"aof_batch_us_total:5000\n" +
+		"aof_error_count:1\n" +
+		"aof_max_batch_age_us:2000\n" +
 		"replica_min_ack_age_ms:2500\n" +
+		"replica_slot_0_applied:1000\n" +
+		"replica_slot_0_durable:900\n" +
+		"replica_slot_0_ack_age_ms:1500\n" +
+		"replica_slot_0_transport:3\n" +
 		"ebpf_proxy_cache_bytes:555\n" +
 		"master_host:127.0.0.1\n"
 }
@@ -203,6 +212,25 @@ func TestExporterScrapeAndMapping(t *testing.T) {
 	}
 	if v := metricValue(t, fams, "pocketkv_replication_min_ack_age_seconds", nil); v != 2.5 {
 		t.Fatalf("replica ack age = %v", v)
+	}
+	if v := metricValue(t, fams, "pocketkv_aof_batch_count_total", nil); v != 10 {
+		t.Fatalf("aof batch count = %v", v)
+	}
+	if v := metricValue(t, fams, "pocketkv_aof_batch_duration_seconds_total", nil); v != 0.005 {
+		t.Fatalf("aof batch duration = %v", v)
+	}
+	if v := metricValue(t, fams, "pocketkv_aof_max_batch_age_seconds", nil); v != 0.002 {
+		t.Fatalf("aof max batch age = %v", v)
+	}
+	if v := metricValue(t, fams, "pocketkv_replica_applied_offset_bytes", map[string]string{"slot": "0"}); v != 1000 {
+		t.Fatalf("slot applied = %v", v)
+	}
+	if v := metricValue(t, fams, "pocketkv_replica_ack_age_seconds", map[string]string{"slot": "0"}); v != 1.5 {
+		t.Fatalf("slot ack age = %v", v)
+	}
+	if v := metricValue(t, fams, "pocketkv_replica_transport_state",
+		map[string]string{"slot": "0", "state": "ebpf"}); v != 1 {
+		t.Fatalf("slot transport = %v", v)
 	}
 	for state, want := range map[string]float64{"active": 1, "sending": 2, "waiting": 3} {
 		if v := metricValue(t, fams, "pocketkv_rdma_fullsync_jobs", map[string]string{"state": state}); v != want {

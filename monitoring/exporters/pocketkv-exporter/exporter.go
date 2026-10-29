@@ -40,10 +40,19 @@ type descSet struct {
 	rdmaResourceRejects *prometheus.Desc
 	rdmaConnectedJobs   *prometheus.Desc
 
-	aofSubmitted *prometheus.Desc
-	aofWritten   *prometheus.Desc
-	aofFatal     *prometheus.Desc
-	replAckAge   *prometheus.Desc
+	aofSubmitted      *prometheus.Desc
+	aofWritten        *prometheus.Desc
+	aofFatal          *prometheus.Desc
+	aofOutstanding    *prometheus.Desc
+	aofBatchCount     *prometheus.Desc
+	aofBatchDur       *prometheus.Desc
+	aofErrorCount     *prometheus.Desc
+	aofMaxBatchAge    *prometheus.Desc
+	replAckAge        *prometheus.Desc
+	replSlotApplied   *prometheus.Desc
+	replSlotDurable   *prometheus.Desc
+	replSlotAckAge    *prometheus.Desc
+	replSlotTransport *prometheus.Desc
 
 	fullsyncTotal  *prometheus.Desc
 	partialOKTotal *prometheus.Desc
@@ -87,10 +96,19 @@ func newDescSet() *descSet {
 		rdmaResourceRejects: d("rdma_resource_rejects_total", "RDMA 资源预算拒绝次数。"),
 		rdmaConnectedJobs:   d("rdma_connected_jobs", "当前已建立连接的 RDMA job 数。"),
 
-		aofSubmitted: d("aof_submitted_bytes", "AOF 已提交写入的字节偏移。"),
-		aofWritten:   d("aof_written_bytes", "AOF 已完成 fsync 的字节偏移；差额为持久化滞后。"),
-		aofFatal:     d("aof_fatal", "AOF 线程进入 fatal 状态（1=fatal，此后只进内存不落 AOF）。"),
-		replAckAge:   d("replication_min_ack_age_seconds", "所有副本中最早一次 REPLACK 距今的秒数（无副本时为 0）。"),
+		aofSubmitted:      d("aof_submitted_bytes", "AOF 已提交写入的字节偏移。"),
+		aofWritten:        d("aof_written_bytes", "AOF 已完成 fsync 的字节偏移；差额为持久化滞后。"),
+		aofFatal:          d("aof_fatal", "AOF 线程进入 fatal 状态（1=fatal，此后只进内存不落 AOF）。"),
+		aofOutstanding:    d("aof_outstanding_batches", "AOF 在途批次（ready + in-flight）。"),
+		aofBatchCount:     d("aof_batch_count_total", "完成的 AOF write+fsync 批次数。"),
+		aofBatchDur:       d("aof_batch_duration_seconds_total", "AOF 批次 write+fsync 累计耗时；配合 _count_total 求平均。"),
+		aofErrorCount:     d("aof_error_count_total", "AOF 写/fsync 错误累计次数。"),
+		aofMaxBatchAge:    d("aof_max_batch_age_seconds", "观测到的最大攒批年龄（崩溃窗口分量）。"),
+		replAckAge:        d("replication_min_ack_age_seconds", "所有副本中最早一次 REPLACK 距今的秒数（无副本时为 0）。"),
+		replSlotApplied:   d("replica_applied_offset_bytes", "per-slot 副本已应用 offset（eBPF slot 0..7）。", "slot"),
+		replSlotDurable:   d("replica_durable_offset_bytes", "per-slot 副本已持久化 offset（eBPF slot 0..7）。", "slot"),
+		replSlotAckAge:    d("replica_ack_age_seconds", "per-slot 副本 REPLACK 年龄（秒）。", "slot"),
+		replSlotTransport: d("replica_transport_state", "per-slot 副本传输状态（固定枚举，值恒为 1）。", "slot", "state"),
 
 		fullsyncTotal:  d("repl_fullsync_total", "触发 fullsync 的总次数。"),
 		partialOKTotal: d("repl_partialsync_ok_total", "partial resync 成功次数。"),
@@ -147,6 +165,8 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 		d.rdmaJobs, d.rdmaCompleted, d.rdmaFailed, d.rdmaCQErrors,
 		d.rdmaCMRejects, d.rdmaResourceRejects, d.rdmaConnectedJobs,
 		d.aofSubmitted, d.aofWritten, d.aofFatal, d.replAckAge,
+		d.replSlotApplied, d.replSlotDurable, d.replSlotAckAge, d.replSlotTransport,
+		d.aofOutstanding, d.aofBatchCount, d.aofBatchDur, d.aofErrorCount, d.aofMaxBatchAge,
 		d.fullsyncTotal, d.partialOKTotal, d.partialErr, d.connectedSlave, d.replicas,
 		d.buildInfo,
 	} {
@@ -193,6 +213,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	e.collectReplication(ch, info)
 	e.collectRDMA(ch, info)
 	e.collectAOF(ch, info)
+	e.collectReplicaSlots(ch, info)
 	e.collectProxy(ch, info)
 
 	e.scrapeSuccess.Collect(ch)
@@ -395,6 +416,23 @@ func (e *Exporter) collectAOF(ch chan<- prometheus.Metric, info map[string]strin
 	e.emitInt(ch, info, "aof_submitted", e.descs.aofSubmitted, prometheus.GaugeValue)
 	e.emitInt(ch, info, "aof_written", e.descs.aofWritten, prometheus.GaugeValue)
 	e.emitInt(ch, info, "aof_fatal", e.descs.aofFatal, prometheus.GaugeValue)
+	e.emitInt(ch, info, "aof_outstanding", e.descs.aofOutstanding, prometheus.GaugeValue)
+	e.emitUint(ch, info, "aof_batch_count", e.descs.aofBatchCount, prometheus.CounterValue)
+	e.emitUint(ch, info, "aof_error_count", e.descs.aofErrorCount, prometheus.CounterValue)
+	if raw, ok := info["aof_batch_us_total"]; ok {
+		if v, err := strconv.ParseUint(raw, 10, 64); err == nil {
+			ch <- prometheus.MustNewConstMetric(e.descs.aofBatchDur, prometheus.CounterValue, float64(v)/1e6)
+		} else {
+			e.noteParseError()
+		}
+	}
+	if raw, ok := info["aof_max_batch_age_us"]; ok {
+		if v, err := strconv.ParseFloat(raw, 64); err == nil {
+			ch <- prometheus.MustNewConstMetric(e.descs.aofMaxBatchAge, prometheus.GaugeValue, v/1e6)
+		} else {
+			e.noteParseError()
+		}
+	}
 	// INFO 中为毫秒，负数表示“无副本/无 ACK”，归一为 0 秒避免误告警。
 	if raw, ok := info["replica_min_ack_age_ms"]; ok {
 		v, err := strconv.ParseInt(raw, 10, 64)
@@ -411,4 +449,81 @@ func (e *Exporter) collectAOF(ch chan<- prometheus.Metric, info map[string]strin
 
 func (e *Exporter) collectProxy(ch chan<- prometheus.Metric, info map[string]string) {
 	e.emitUint(ch, info, "ebpf_proxy_cache_bytes", e.descs.proxyCacheBytes, prometheus.GaugeValue)
+}
+
+func (e *Exporter) collectReplicaSlots(ch chan<- prometheus.Metric, info map[string]string) {
+	type slotStat struct {
+		applied, durable uint64
+		ackAgeMS         int64
+		transport        int64
+		seen             bool
+	}
+	slots := make(map[int]*slotStat)
+	for k, v := range info {
+		rest, ok := strings.CutPrefix(k, "replica_slot_")
+		if !ok {
+			continue
+		}
+		idxPart, field, ok := strings.Cut(rest, "_")
+		if !ok {
+			continue
+		}
+		idx, err := strconv.Atoi(idxPart)
+		if err != nil || idx < 0 || idx >= 64 {
+			e.noteParseError()
+			continue
+		}
+		st := slots[idx]
+		if st == nil {
+			st = &slotStat{}
+			slots[idx] = st
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			e.noteParseError()
+			continue
+		}
+		st.seen = true
+		switch field {
+		case "applied":
+			st.applied = uint64(n)
+		case "durable":
+			st.durable = uint64(n)
+		case "ack_age_ms":
+			st.ackAgeMS = n
+		case "transport":
+			st.transport = n
+		}
+	}
+	for idx, st := range slots {
+		if !st.seen {
+			continue
+		}
+		label := strconv.Itoa(idx)
+		ch <- prometheus.MustNewConstMetric(e.descs.replSlotApplied, prometheus.GaugeValue, float64(st.applied), label)
+		ch <- prometheus.MustNewConstMetric(e.descs.replSlotDurable, prometheus.GaugeValue, float64(st.durable), label)
+		age := st.ackAgeMS
+		if age < 0 {
+			age = 0
+		}
+		ch <- prometheus.MustNewConstMetric(e.descs.replSlotAckAge, prometheus.GaugeValue, float64(age)/1000.0, label)
+		ch <- prometheus.MustNewConstMetric(e.descs.replSlotTransport, prometheus.GaugeValue, 1, label, transportStateName(st.transport))
+	}
+}
+
+func transportStateName(kind int64) string {
+	switch kind {
+	case 1:
+		return "tcp"
+	case 2:
+		return "rdma"
+	case 3:
+		return "ebpf"
+	case 4:
+		return "kprobe-rdma"
+	case 5:
+		return "ebpf-tcp"
+	default:
+		return "unknown"
+	}
 }
