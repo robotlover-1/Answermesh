@@ -44,6 +44,11 @@ type Config struct {
 		MaxOpenConn int
 		MaxIdleConn int
 	}
+	// Identity 校验 backend 签发的短时用户身份令牌；secret 支持逗号分隔轮换。
+	Identity struct {
+		Secret string `mapstructure:"secret"`
+		Issuer string `mapstructure:"issuer"`
+	} `mapstructure:"identity"`
 	// KnowledgeOutbox 控制知识发布 Outbox Worker（PR-M2/M3）。
 	KnowledgeOutbox struct {
 		Enabled         bool `mapstructure:"enabled"`
@@ -161,6 +166,10 @@ func applyEnvOverrides(c *Config) {
 		expandEnvValue(c.Server.MetricsAddr))
 	c.Server.MetricsAccessToken = envOverride("AI_CHAT_METRICS_TOKEN",
 		expandEnvValue(c.Server.MetricsAccessToken))
+	c.Identity.Secret = envOverride("AI_CHAT_IDENTITY_SECRET",
+		expandEnvValue(c.Identity.Secret))
+	c.Identity.Issuer = envOverride("AI_CHAT_IDENTITY_ISSUER",
+		expandEnvValue(c.Identity.Issuer))
 	c.Chat.ApiKey = envOverride("AI_CHAT_API_KEY", expandEnvValue(c.Chat.ApiKey))
 	if c.Chat.ApiKey == "" {
 		c.Chat.ApiKey = envOverride("OPENAI_API_KEY", "")

@@ -50,6 +50,15 @@ func (r *ChatGPTWebServer) httpServer(ctx context.Context) {
 	chat := entry.Group("/api")
 	chat.Use(middlewares.RateLimitMiddleware(rate.Limit(10), 10))
 	chat.POST("/chat-process", middlewares.AuthMiddleware(), chatService.ChatProcess)
+
+	// 会话/消息（tenant/user 由 backend 身份令牌派生，见 controllers/sessions.go）
+	sessions := chat.Group("/v1/sessions")
+	sessions.Use(middlewares.AuthMiddleware())
+	sessions.POST("", chatService.CreateSession)
+	sessions.GET("", chatService.ListSessions)
+	sessions.DELETE("/:id", chatService.DeleteSession)
+	sessions.GET("/:id/messages", chatService.ListMessages)
+	sessions.POST("/:id/messages", chatService.AppendConversation)
 	chat.POST("/config", func(ctx *gin.Context) {
 		ctx.JSON(200, gin.H{
 			"status": "Success",

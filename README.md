@@ -78,6 +78,21 @@ bash deploy/scripts/fetch_frpc.sh           # frp 客户端：**要公网访问�
 | 2 | 一个域名，DNS A 记录指向云主机 IP                            | 如`answermesh.xyz`；大陆机房还需 ICP 备案                                                                  |
 | 3 | `bin/frpc` 客户端（与云端 frps **同版本**，本项目用 0.62.1） | 一条命令：`bash deploy/scripts/fetch_frpc.sh`（`bin/` 已 gitignore，脚本会下载 + 官方 sha256 校验 + 安装） |
 
+### 服务间身份令牌（会话/消息 API）
+
+zRPC 的 `AI_CHAT_SERVER_ACCESS_TOKEN` 只做服务间传输认证，不携带终端用户身份。
+backend 在用户登录后用共享密钥签发 60s HMAC 令牌（`tenant_id/user_id/exp`），
+ai-chat-service 验签后才访问 `chat_sessions/chat_messages`；前端传的 user_id 不会被使用。
+
+```bash
+# 两个服务读取同一个值；写进 deploy/app/.env（gitignore），start.sh 会自动加载
+openssl rand -hex 32        # 输出填入 AI_CHAT_IDENTITY_SECRET
+# 可选：AI_CHAT_IDENTITY_ISSUER=answermesh-backend（默认值）
+```
+
+支持逗号分隔轮换：`AI_CHAT_IDENTITY_SECRET="<new>,<old>"`（签名用第一个，验签接受任一）。
+未配置时服务仍能启动，但会话 API 一律返回 401。
+
 ### 那三个值分别怎么来
 
 

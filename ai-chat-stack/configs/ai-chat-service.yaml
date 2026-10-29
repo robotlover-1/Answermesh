@@ -49,6 +49,9 @@ mysql:
   maxLifeTime: 3600
   maxOpenConn: 10
   maxIdleConn: 10
+identity:
+  secret: "${AI_CHAT_IDENTITY_SECRET}"
+  issuer: "answermesh-backend"
 knowledge_outbox:
   enabled: true
   interval_seconds: 5

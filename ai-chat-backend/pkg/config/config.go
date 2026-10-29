@@ -53,6 +53,12 @@ type Config struct {
 		Enabled   bool `mapstructure:"enabled"`
 		InitQuota int  `mapstructure:"init_quota"`
 	}
+	// Identity 用于给 ai-chat-service 签发短时 tenant/user 身份令牌（HMAC）。
+	Identity struct {
+		Secret   string `mapstructure:"secret"`
+		Issuer   string `mapstructure:"issuer"`
+		TenantID uint64 `mapstructure:"tenant_id"`
+	}
 	Tokenizer struct {
 		Address string
 	}
@@ -102,6 +108,16 @@ func applyEnvOverrides(c *Config) {
 		"AI_CHAT_SERVER_ACCESS_TOKEN",
 		expandEnvValue(c.DependOn.AiChatService.AccessToken))
 	c.Redis.Pwd = envOverride("AI_CHAT_REDIS_PWD", expandEnvValue(c.Redis.Pwd))
+	c.Identity.Secret = envOverride("AI_CHAT_IDENTITY_SECRET",
+		expandEnvValue(c.Identity.Secret))
+	c.Identity.Issuer = envOverride("AI_CHAT_IDENTITY_ISSUER",
+		expandEnvValue(c.Identity.Issuer))
+	if c.Identity.TenantID == 0 {
+		c.Identity.TenantID = 1
+	}
+	if c.Identity.Issuer == "" {
+		c.Identity.Issuer = "answermesh-backend"
+	}
 }
 
 func GetConfig() *Config {

@@ -46,22 +46,26 @@ func reportFirstToken(ctx context.Context, d time.Duration) {
 
 // RegisterChatZRPC wires chat methods on a zrpc.Server and records zRPC-level
 // latency/count (current primary transport). Labels only contain method/status.
+// wrapUnaryMetrics 为任意 unary 方法统一记录 requests_total 与耗时。
+func wrapUnaryMetrics(method string, h zrpc.UnaryHandler,
+	bus *metrics_bus.BusMetrics) zrpc.UnaryHandler {
+	if bus == nil {
+		return h
+	}
+	return func(ctx context.Context, raw json.RawMessage) (any, error) {
+		start := time.Now()
+		resp, err := h(ctx, raw)
+		status := zrpcStatus(err)
+		bus.ZrpcRequests.WithLabelValues(method, "unary", status).Inc()
+		bus.ZrpcUnaryDuration.WithLabelValues(method, status).
+			Observe(time.Since(start).Seconds())
+		return resp, err
+	}
+}
+
 func RegisterChatZRPC(zsrv *zrpc.Server, chat ChatSvc, streamOK bool,
 	bus *metrics_bus.BusMetrics) error {
-	unary := unaryChatAdapter(chat)
-	if bus != nil {
-		inner := unary
-		unary = func(ctx context.Context, raw json.RawMessage) (any, error) {
-			start := time.Now()
-			resp, err := inner(ctx, raw)
-			status := zrpcStatus(err)
-			bus.ZrpcRequests.WithLabelValues(contract.MethodChatCompletion, "unary", status).Inc()
-			bus.ZrpcUnaryDuration.WithLabelValues(
-				contract.MethodChatCompletion, status).
-				Observe(time.Since(start).Seconds())
-			return resp, err
-		}
-	}
+	unary := wrapUnaryMetrics(contract.MethodChatCompletion, unaryChatAdapter(chat), bus)
 	if err := zsrv.RegisterUnary(contract.MethodChatCompletion, unary); err != nil {
 		return err
 	}

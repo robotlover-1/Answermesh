@@ -34,3 +34,10 @@ dependOn:
   ai-chat-service:
     address: "ai-chat-service:50051"
     accessToken: "${AI_CHAT_SERVER_ACCESS_TOKEN}"
+auth:
+  enabled: true
+  init_quota: 100000
+identity:
+  secret: "${AI_CHAT_IDENTITY_SECRET}"
+  issuer: "answermesh-backend"
+  tenant_id: 1

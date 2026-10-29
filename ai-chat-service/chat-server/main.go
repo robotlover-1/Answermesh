@@ -22,6 +22,7 @@ import (
 	"ai-chat-service/pkg/config"
 	"ai-chat-service/pkg/db/mysql"
 	"ai-chat-service/pkg/db/redis"
+	"ai-chat-service/pkg/identity"
 	"ai-chat-service/pkg/log"
 
 	zrpc "echo-zrpc-go"
@@ -163,6 +164,15 @@ func main() {
 		fatalStartup("%v", err)
 	}
 	if err := server.RegisterChatZRPC(zsrv, service, true, busMetrics); err != nil {
+		fatalStartup("%v", err)
+	}
+	identityVerifier := identity.NewVerifier(cnf.Identity.Secret, cnf.Identity.Issuer)
+	if !identityVerifier.Configured() {
+		log.ErrorF("identity secret is empty: session APIs will reject requests (set AI_CHAT_IDENTITY_SECRET)")
+	}
+	if err := server.RegisterSessionZRPC(zsrv,
+		data.NewSessionRepository(mysql.GetDB(), busMetrics),
+		identityVerifier, busMetrics); err != nil {
 		fatalStartup("%v", err)
 	}
 	if err := zsrv.Serve(); err != nil {

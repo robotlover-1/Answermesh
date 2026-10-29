@@ -45,5 +45,9 @@ mysql:
 auth:
   enabled: true
   init_quota: 100000
+identity:
+  secret: "${AI_CHAT_IDENTITY_SECRET}"
+  issuer: "answermesh-backend"
+  tenant_id: 1
 tokenizer:
   address: "http://127.0.0.1:3002"

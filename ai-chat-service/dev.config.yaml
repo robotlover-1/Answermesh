@@ -49,6 +49,10 @@ mysql:
   maxLifeTime: 3600
   maxOpenConn: 10
   maxIdleConn: 10
+# backend 签发的短时用户身份令牌（HMAC）。secret 支持逗号分隔轮换，至少 16 字节。
+identity:
+  secret: "${AI_CHAT_IDENTITY_SECRET}"
+  issuer: "answermesh-backend"
 # 知识发布 Outbox Worker：DB 提交与 PocketKV 失效解耦，失败按租约重试/进入 dead。
 knowledge_outbox:
   enabled: true

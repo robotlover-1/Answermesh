@@ -8,4 +8,10 @@ const (
 	MethodChatCompletionStream = "chat.completion_stream"
 	MethodFilterValidate       = "filter.validate"
 	MethodFilterFindAll        = "filter.find_all"
+
+	MethodSessionCreate      = "session.create"
+	MethodSessionList        = "session.list"
+	MethodSessionDelete      = "session.delete"
+	MethodMessageList        = "message.list"
+	MethodConversationAppend = "conversation.append"
 )
