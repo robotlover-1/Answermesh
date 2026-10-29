@@ -29,9 +29,7 @@ type RecordsObserver interface {
 	InsertDuration(seconds float64)
 	QueueLength(n int)
 	RecordPersisted()
-	// DBQuery 的 operation 必须是硬编码逻辑名（如 insert_record），
-	// 不能传真实 SQL 文本、主键或用户内容。
-	DBQuery(operation, result string, seconds float64)
+	DBObserver
 }
 
 type nopRecordsObserver struct{}
@@ -42,6 +40,7 @@ func (nopRecordsObserver) InsertDuration(float64)          {}
 func (nopRecordsObserver) QueueLength(int)                 {}
 func (nopRecordsObserver) RecordPersisted()                {}
 func (nopRecordsObserver) DBQuery(string, string, float64) {}
+func (nopRecordsObserver) TxRetry(string)                  {}
 
 type IChatRecordsData interface {
 	Add(ctx context.Context, record *ChatRecord) error

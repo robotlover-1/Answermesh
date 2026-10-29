@@ -44,6 +44,15 @@ type Config struct {
 		MaxOpenConn int
 		MaxIdleConn int
 	}
+	// KnowledgeOutbox 控制知识发布 Outbox Worker（PR-M2/M3）。
+	KnowledgeOutbox struct {
+		Enabled         bool `mapstructure:"enabled"`
+		IntervalSeconds int  `mapstructure:"interval_seconds"`
+		BatchSize       int  `mapstructure:"batch_size"`
+		MaxAttempts     int  `mapstructure:"max_attempts"`
+		LeaseSeconds    int  `mapstructure:"lease_seconds"`
+		CacheTTLSeconds int  `mapstructure:"cache_ttl_seconds"`
+	} `mapstructure:"knowledge_outbox"`
 	Redis struct {
 		Host string
 		Port int

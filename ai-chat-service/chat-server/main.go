@@ -14,9 +14,11 @@ import (
 	"time"
 
 	"ai-chat-service/chat-server/data"
+	"ai-chat-service/chat-server/kbcache"
 	metrics_bus "ai-chat-service/chat-server/metrics-bus"
 	"ai-chat-service/chat-server/semcache"
 	"ai-chat-service/chat-server/server"
+	"ai-chat-service/chat-server/worker"
 	"ai-chat-service/pkg/config"
 	"ai-chat-service/pkg/db/mysql"
 	"ai-chat-service/pkg/db/redis"
@@ -126,6 +128,31 @@ func main() {
 	redis.InitRedisPool(cnf)
 	recordsData := data.NewChatRecordsData(mysql.GetDB(), busMetrics)
 
+	// 知识发布 Outbox Worker：与请求路径解耦，失败按租约/退避重试。
+	var workerCancel context.CancelFunc
+	var workerDone chan struct{}
+	if cnf.KnowledgeOutbox.Enabled {
+		outboxRepo := data.NewOutboxRepository(mysql.GetDB(), busMetrics)
+		knowledgeRepo := data.NewKnowledgeRepository(mysql.GetDB(), busMetrics)
+		ow := worker.NewOutboxWorker(outboxRepo, knowledgeRepo, kbcache.New(), busMetrics,
+			worker.OutboxConfig{
+				Interval:    time.Duration(cnf.KnowledgeOutbox.IntervalSeconds) * time.Second,
+				Lease:       time.Duration(cnf.KnowledgeOutbox.LeaseSeconds) * time.Second,
+				BatchSize:   cnf.KnowledgeOutbox.BatchSize,
+				MaxAttempts: cnf.KnowledgeOutbox.MaxAttempts,
+				CacheTTL:    time.Duration(cnf.KnowledgeOutbox.CacheTTLSeconds) * time.Second,
+			})
+		workerCtx, cancel := context.WithCancel(context.Background())
+		workerCancel = cancel
+		workerDone = make(chan struct{})
+		go func() {
+			defer close(workerDone)
+			if err := ow.Run(workerCtx); err != nil {
+				log.ErrorF("outbox worker stopped: %v", err)
+			}
+		}()
+	}
+
 	// 单 zrpc 传输（gRPC 已删）：业务端口即 cnf.Server.Port（50055）
 	service := server.NewChatService(recordsData, cnf, logger, busMetrics)
 	zsrv, err := zrpc.NewServer(zrpc.ServerOptions{
@@ -155,6 +182,14 @@ func main() {
 
 	if err := zsrv.Close(); err != nil {
 		log.ErrorF("zrpc close: %v", err)
+	}
+	if workerCancel != nil {
+		workerCancel()
+		select {
+		case <-workerDone:
+		case <-time.After(5 * time.Second):
+			log.ErrorF("outbox worker did not stop within 5s")
+		}
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()

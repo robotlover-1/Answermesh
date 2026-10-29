@@ -16,6 +16,7 @@ type countingObserver struct {
 	queue     int64
 	persisted int64
 	query     int64
+	retry     int64
 }
 
 func (o *countingObserver) EnqueueFailure(string)          { atomic.AddInt64(&o.enqueue, 1) }
@@ -24,6 +25,7 @@ func (o *countingObserver) InsertDuration(float64)         { atomic.AddInt64(&o.
 func (o *countingObserver) QueueLength(n int)              { atomic.StoreInt64(&o.queue, int64(n)) }
 func (o *countingObserver) RecordPersisted()               { atomic.AddInt64(&o.persisted, 1) }
 func (o *countingObserver) DBQuery(_, _ string, _ float64) { atomic.AddInt64(&o.query, 1) }
+func (o *countingObserver) TxRetry(string)                 { atomic.AddInt64(&o.retry, 1) }
 
 func newTestRecords(t *testing.T, insert func(context.Context, *ChatRecord) (int64, error)) (*chatRecordsData, *countingObserver) {
 	t.Helper()

@@ -49,6 +49,14 @@ mysql:
   maxLifeTime: 3600
   maxOpenConn: 10
   maxIdleConn: 10
+# 知识发布 Outbox Worker：DB 提交与 PocketKV 失效解耦，失败按租约重试/进入 dead。
+knowledge_outbox:
+  enabled: true
+  interval_seconds: 5
+  batch_size: 20
+  max_attempts: 8
+  lease_seconds: 60
+  cache_ttl_seconds: 86400
 dependOn:
   sensitive:
     address: "localhost:50053"

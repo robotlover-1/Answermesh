@@ -49,6 +49,13 @@ mysql:
   maxLifeTime: 3600
   maxOpenConn: 10
   maxIdleConn: 10
+knowledge_outbox:
+  enabled: true
+  interval_seconds: 5
+  batch_size: 20
+  max_attempts: 8
+  lease_seconds: 60
+  cache_ttl_seconds: 86400
 dependOn:
   sensitive:
     address: "sensitive:50051"

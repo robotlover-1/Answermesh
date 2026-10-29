@@ -52,11 +52,12 @@ type AppendInput struct {
 }
 
 type SessionRepository struct {
-	db *sql.DB
+	db  *sql.DB
+	obs DBObserver
 }
 
-func NewSessionRepository(db *sql.DB) *SessionRepository {
-	return &SessionRepository{db: db}
+func NewSessionRepository(db *sql.DB, obs DBObserver) *SessionRepository {
+	return &SessionRepository{db: db, obs: DBOrNop(obs)}
 }
 
 func (r *SessionRepository) CreateSession(ctx context.Context, tenantID, userID uint64, title string) (uint64, error) {
@@ -100,6 +101,7 @@ WHERE id=? AND tenant_id=? AND user_id=? AND deleted_at IS NULL`,
 // 使用 idx_user_cursor(tenant_id,user_id,id)，不依赖 OFFSET。
 func (r *SessionRepository) ListSessions(ctx context.Context, tenantID, userID, beforeID uint64, limit int) ([]Session, error) {
 	limit = clampLimit(limit)
+	start := time.Now()
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, tenant_id, user_id, title, created_at, updated_at
 FROM chat_sessions
@@ -108,6 +110,7 @@ WHERE tenant_id=? AND user_id=? AND deleted_at IS NULL
 ORDER BY id DESC
 LIMIT ?`,
 		tenantID, userID, beforeID, beforeID, limit)
+	r.obs.DBQuery("list_sessions", txResult(err), time.Since(start).Seconds())
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +143,7 @@ WHERE id=? AND tenant_id=? AND user_id=? AND deleted_at IS NULL`,
 // beforeID=0 表示第一页。返回按 id 降序（最新在前）。
 func (r *SessionRepository) ListMessages(ctx context.Context, tenantID, userID, sessionID, beforeID uint64, limit int) ([]Message, error) {
 	limit = clampLimit(limit)
+	start := time.Now()
 	rows, err := r.db.QueryContext(ctx, `
 SELECT m.id, m.session_id, m.request_id, m.role, m.content, m.token_count, m.source, m.created_at
 FROM chat_messages m
@@ -149,6 +153,7 @@ WHERE m.session_id=? AND s.tenant_id=? AND s.user_id=? AND s.deleted_at IS NULL
 ORDER BY m.id DESC
 LIMIT ?`,
 		sessionID, tenantID, userID, beforeID, beforeID, limit)
+	r.obs.DBQuery("list_messages", txResult(err), time.Since(start).Seconds())
 	if err != nil {
 		return nil, err
 	}
@@ -182,6 +187,11 @@ func (r *SessionRepository) AppendConversation(ctx context.Context, tenantID, us
 	if source == "" {
 		source = "unknown"
 	}
+
+	start := time.Now()
+	defer func() {
+		r.obs.DBQuery("append_conversation", txResult(err), time.Since(start).Seconds())
+	}()
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {

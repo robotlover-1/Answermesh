@@ -34,6 +34,13 @@ type BusMetrics struct {
 	// MySQL 逻辑查询（operation 为硬编码逻辑名，禁止 SQL 文本/主键作标签）。
 	MySQLQueries       *prometheus.CounterVec
 	MySQLQueryDuration *prometheus.HistogramVec
+	MySQLTxRetries     *prometheus.CounterVec
+
+	// 知识发布 Outbox 与 PocketKV Cache Aside。
+	OutboxPending   prometheus.Gauge
+	OutboxOldestAge prometheus.Gauge
+	OutboxEvents    *prometheus.CounterVec
+	KBCacheLookups  *prometheus.CounterVec
 }
 
 const (
@@ -194,6 +201,42 @@ func NewBusMetrics(registry *prometheus.Registry) *BusMetrics {
 		Help:        "MySQL 逻辑查询耗时（operation 为硬编码逻辑名）",
 		Buckets:     []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
 	}, []string{"operation"})
+	mysqlTxRetries := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "mysql_tx_retries_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "事务整体重试次数（reason=deadlock|lock_timeout）",
+	}, []string{"reason"})
+
+	outboxPending := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "outbox_pending_jobs",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "cache_outbox 待处理/处理中/失败待重试任务数",
+	})
+	outboxOldestAge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "outbox_oldest_pending_age_seconds",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "最老一条未完成 Outbox 任务的存在时长（秒）",
+	})
+	outboxEvents := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "outbox_events_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "Outbox 事件处理结果（result=done|retry|dead|error）",
+	}, []string{"result"})
+	kbCacheLookups := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "kb_cache_lookups_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "已发布知识缓存查询结果（outcome=hit|miss|error；版本始终以 MySQL 为准）",
+	}, []string{"outcome"})
 
 	registry.MustRegister(questionsTotalCounter, keywordsQuestionsTotalCounter,
 		sensitiveQuestionsTotalCounter, errQuestionsTotalCounter,
@@ -201,7 +244,8 @@ func NewBusMetrics(registry *prometheus.Registry) *BusMetrics {
 		recordsDBInsertDuration, recordsQueueLength, recordsPersisted,
 		zrpcRequests, zrpcUnaryDuration, zrpcStreamDuration, zrpcStreamActive, zrpcFirstToken,
 		cacheRequests, cacheWrites, llmRequests, llmTokens,
-		mysqlQueries, mysqlQueryDuration)
+		mysqlQueries, mysqlQueryDuration, mysqlTxRetries,
+		outboxPending, outboxOldestAge, outboxEvents, kbCacheLookups)
 	return &BusMetrics{
 		QuestionsTotalCounter:          questionsTotalCounter,
 		KeywordsQuestionsTotalCounter:  keywordsQuestionsTotalCounter,
@@ -223,6 +267,11 @@ func NewBusMetrics(registry *prometheus.Registry) *BusMetrics {
 		LLMTokens:                      llmTokens,
 		MySQLQueries:                   mysqlQueries,
 		MySQLQueryDuration:             mysqlQueryDuration,
+		MySQLTxRetries:                 mysqlTxRetries,
+		OutboxPending:                  outboxPending,
+		OutboxOldestAge:                outboxOldestAge,
+		OutboxEvents:                   outboxEvents,
+		KBCacheLookups:                 kbCacheLookups,
 	}
 }
 
@@ -251,6 +300,23 @@ func (m *BusMetrics) RecordPersisted() {
 func (m *BusMetrics) DBQuery(operation, result string, seconds float64) {
 	m.MySQLQueries.WithLabelValues(operation, result).Inc()
 	m.MySQLQueryDuration.WithLabelValues(operation).Observe(seconds)
+}
+
+func (m *BusMetrics) TxRetry(reason string) {
+	m.MySQLTxRetries.WithLabelValues(reason).Inc()
+}
+
+func (m *BusMetrics) OutboxStats(pending int, oldestSeconds float64) {
+	m.OutboxPending.Set(float64(pending))
+	m.OutboxOldestAge.Set(oldestSeconds)
+}
+
+func (m *BusMetrics) OutboxEvent(result string) {
+	m.OutboxEvents.WithLabelValues(result).Inc()
+}
+
+func (m *BusMetrics) KBCacheLookup(outcome string) {
+	m.KBCacheLookups.WithLabelValues(outcome).Inc()
 }
 
 // 以下方法实现 semcache.Observer。

@@ -20,7 +20,9 @@ import (
 //
 //	MYSQL_TEST_DSN='user:pass@tcp(127.0.0.1:3306)/test_db?parseTime=true&charset=utf8mb4' \
 //	  go test ./chat-server/data/
-func setupSessionRepo(t *testing.T) (*SessionRepository, *sql.DB, uint64) {
+//
+// setupDB 打开真实 MySQL、应用迁移，并为每个测试分配唯一 tenant；测试结束清理该租户数据。
+func setupDB(t *testing.T) (*sql.DB, uint64) {
 	t.Helper()
 	dsn := os.Getenv("MYSQL_TEST_DSN")
 	if dsn == "" {
@@ -47,10 +49,18 @@ func setupSessionRepo(t *testing.T) (*SessionRepository, *sql.DB, uint64) {
 		tenant = 1
 	}
 	t.Cleanup(func() {
+		_, _ = db.Exec("DELETE FROM cache_outbox WHERE entry_id IN (SELECT id FROM knowledge_entries WHERE tenant_id=?)", tenant)
+		_, _ = db.Exec("DELETE FROM knowledge_entries WHERE tenant_id=?", tenant)
 		_, _ = db.Exec("DELETE FROM chat_sessions WHERE tenant_id=?", tenant)
 		_ = db.Close()
 	})
-	return NewSessionRepository(db), db, tenant
+	return db, tenant
+}
+
+func setupSessionRepo(t *testing.T) (*SessionRepository, *sql.DB, uint64) {
+	t.Helper()
+	db, tenant := setupDB(t)
+	return NewSessionRepository(db, nil), db, tenant
 }
 
 func mustSession(t *testing.T, r *SessionRepository, tenant, user uint64, title string) uint64 {
