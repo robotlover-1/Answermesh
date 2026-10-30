@@ -57,10 +57,10 @@ WHERE status='processing' AND (locked_until IS NULL OR locked_until < CURRENT_TI
 	rows, err := tx.QueryContext(ctx, `
 SELECT id, entry_id, version, event_type, attempts
 FROM cache_outbox
-WHERE status IN ('pending','failed')
+WHERE status='pending'
   AND available_at <= CURRENT_TIMESTAMP(3)
   AND (locked_until IS NULL OR locked_until < CURRENT_TIMESTAMP(3))
-ORDER BY id
+ORDER BY available_at, id
 LIMIT ?
 FOR UPDATE SKIP LOCKED`, limit)
 	if err != nil {

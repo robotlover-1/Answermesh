@@ -107,7 +107,7 @@ func (r *SessionRepository) ListSessions(ctx context.Context, tenantID, userID, 
 	start := time.Now()
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, tenant_id, user_id, title, created_at, updated_at
-FROM chat_sessions
+FROM chat_sessions FORCE INDEX (idx_user_cursor)
 WHERE tenant_id=? AND user_id=? AND deleted_at IS NULL
   AND (?=0 OR id<?)
 ORDER BY id DESC
@@ -149,7 +149,7 @@ func (r *SessionRepository) ListMessages(ctx context.Context, tenantID, userID, 
 	start := time.Now()
 	rows, err := r.db.QueryContext(ctx, `
 SELECT m.id, m.session_id, m.request_id, m.role, m.content, m.token_count, m.source, m.created_at
-FROM chat_messages m
+FROM chat_messages m FORCE INDEX (idx_session_messages)
 JOIN chat_sessions s ON s.id = m.session_id
 WHERE m.session_id=? AND s.tenant_id=? AND s.user_id=? AND s.deleted_at IS NULL
   AND (?=0 OR m.id<?)
