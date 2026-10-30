@@ -51,6 +51,10 @@ make test           # RESP 分片解析、指标映射、目标断线容错
 | `pocketkv_rdma_fullsync_{completed,failed}_total` | Counter | INFO |
 | `pocketkv_rdma_{cq_errors,cm_rejects,resource_rejects}_total` | Counter | INFO |
 | `pocketkv_rdma_connected_jobs` | Gauge | INFO |
+| `pocketkv_rdma_fs_wc_errors_total{status}` | Counter | INFO（RETRY_EXC_ERR/WR_FLUSH_ERR/REM_ACCESS_ERR/LOC_PROT_ERR/RNR_RETRY_EXC_ERR/OTHER） |
+| `pocketkv_rdma_fs_post_send_errors_total` | Counter | INFO |
+| `pocketkv_rdma_fs_poll_cq_failures_total` | Counter | INFO |
+| `pocketkv_rdma_fs_cm_disconnects_total` | Counter | INFO |
 | `pocketkv_aof_{submitted,written}_bytes` | Gauge | INFO |
 | `pocketkv_aof_outstanding_batches` | Gauge | INFO |
 | `pocketkv_aof_batch_count_total` | Counter | INFO |

@@ -111,6 +111,20 @@ func (w *OutboxWorker) runOnce(ctx context.Context) {
 }
 
 func (w *OutboxWorker) process(ctx context.Context, job data.OutboxJob) {
+	if job.EventType == "KNOWLEDGE_REVOKED" {
+		// 撤稿的正确性由 MySQL published_version=0 保证；缓存只是可丢弃副本。
+		if err := w.repo.MarkDone(ctx, job.ID, job.ClaimToken); err != nil {
+			if errors.Is(err, data.ErrLeaseLost) {
+				w.noteLeaseError(job, err)
+				return
+			}
+			log.ErrorF("outbox mark revoked done failed id=%d: %v", job.ID, err)
+			w.metrics.OutboxEvent("error")
+			return
+		}
+		w.metrics.OutboxEvent("revoked")
+		return
+	}
 	if job.EventType != "KNOWLEDGE_PUBLISHED" {
 		// 未知事件类型不可重试，直接进入 dead 以便告警/人工处理。
 		if _, err := w.repo.MarkFailed(ctx, job.ID, job.ClaimToken, w.maxAttempts, w.maxAttempts, w.backoff); err != nil {

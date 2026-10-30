@@ -67,6 +67,7 @@ func (r *ChatGPTWebServer) httpServer(ctx context.Context) {
 	adminKnowledge.POST("/:id/versions", chatService.SubmitKnowledge)
 	adminKnowledge.POST("/:id/versions/:version/review", chatService.ReviewKnowledge)
 	adminKnowledge.POST("/:id/versions/:version/publish", chatService.PublishKnowledge)
+	adminKnowledge.POST("/:id/revoke", chatService.RevokeKnowledge)
 
 	knowledge := chat.Group("/v1/knowledge")
 	knowledge.Use(middlewares.AuthMiddleware())

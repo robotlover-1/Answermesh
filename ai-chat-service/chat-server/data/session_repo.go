@@ -231,6 +231,17 @@ func (r *SessionRepository) AppendConversation(ctx context.Context, tenantID, us
 	if err != nil {
 		return 0, 0, false, err
 	}
+	// 同一事务内维护日汇总：只有真正新增的消息才 +1，重试不双计。
+	if userCreated {
+		if err = bumpMessageDaily(ctx, tx, tenantID, "user"); err != nil {
+			return 0, 0, false, err
+		}
+	}
+	if assistantCreated {
+		if err = bumpMessageDaily(ctx, tx, tenantID, "assistant"); err != nil {
+			return 0, 0, false, err
+		}
+	}
 	if _, err = tx.ExecContext(ctx,
 		"UPDATE chat_sessions SET updated_at=CURRENT_TIMESTAMP(3) WHERE id=? AND tenant_id=? AND user_id=?",
 		sessionID, tenantID, userID); err != nil {
@@ -293,4 +304,14 @@ func clampLimit(limit int) int {
 		return maxPageLimit
 	}
 	return limit
+}
+
+// bumpMessageDaily 与 chat_messages 写入同事务提交；day 使用数据库 CURRENT_DATE()，
+// 与 created_at 的 DB 默认时区保持一致。
+func bumpMessageDaily(ctx context.Context, tx *sql.Tx, tenantID uint64, role string) error {
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO chat_message_daily(tenant_id, day, role, messages)
+VALUES(?, CURRENT_DATE(), ?, 1)
+ON DUPLICATE KEY UPDATE messages=messages+1`, tenantID, role)
+	return err
 }

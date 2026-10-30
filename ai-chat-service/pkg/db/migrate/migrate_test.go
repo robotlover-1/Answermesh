@@ -43,8 +43,8 @@ func TestLoadEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(migs) != 14 {
-		t.Fatalf("migrations = %d, want 14", len(migs))
+	if len(migs) != 17 {
+		t.Fatalf("migrations = %d, want 17", len(migs))
 	}
 	for i, m := range migs {
 		if m.Version != int64(i+1) || m.UpSQL == "" || m.DownSQL == "" || len(m.Checksum) != 64 {

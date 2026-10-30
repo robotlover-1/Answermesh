@@ -19,5 +19,6 @@ const (
 	MethodKnowledgeSubmit       = "knowledge.submit"
 	MethodKnowledgeReview       = "knowledge.review"
 	MethodKnowledgePublish      = "knowledge.publish"
+	MethodKnowledgeRevoke       = "knowledge.revoke"
 	MethodKnowledgeGetPublished = "knowledge.get_published"
 )

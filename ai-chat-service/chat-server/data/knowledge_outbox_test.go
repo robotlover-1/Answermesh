@@ -338,3 +338,62 @@ func TestOutboxLeaseFencing(t *testing.T) {
 		t.Fatalf("status = %q, %v; want done", status, err)
 	}
 }
+
+// PR-K1：撤稿后权威版本为 0，旧版本禁止重发；重复撤稿不重复审计/Outbox。
+func TestKnowledgeRevokeLifecycle(t *testing.T) {
+	repo, outbox, tenant := newKnowledgeTestData(t)
+	ctx := context.Background()
+	entryID, err := repo.CreateEntry(ctx, tenant, "revoke", "db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1 := mustPublished(t, repo, tenant, entryID, "v1 answer")
+	revoked, err := repo.Revoke(ctx, tenant, entryID, v1, 42, "policy violation")
+	if err != nil || revoked != v1 {
+		t.Fatalf("Revoke = %d, %v; want %d", revoked, err, v1)
+	}
+	if got, err := repo.GetPublishedVersion(ctx, tenant, entryID); err != nil || got != 0 {
+		t.Fatalf("published after revoke = %d, %v", got, err)
+	}
+	// 读数必须以 MySQL 为准：返回未发布，即使旧版本缓存键仍存在。
+	store := newFakeKBStore()
+	store.put(PublishedAnswerKey(entryID, v1), "v1 answer")
+	read := NewKnowledgeService(repo, store, time.Hour, nil)
+	if _, _, err := read.PublishedAnswer(ctx, tenant, entryID); !errors.Is(err, ErrNotPublished) {
+		t.Fatalf("PublishedAnswer after revoke = %v, want ErrNotPublished", err)
+	}
+	// 重复撤稿幂等：不重复审计/事件。
+	if revoked2, err := repo.Revoke(ctx, tenant, entryID, v1, 42, "again"); err != nil || revoked2 != v1 {
+		t.Fatalf("idempotent Revoke = %d, %v", revoked2, err)
+	}
+	var audits, revokeEvents int
+	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM knowledge_audit_events
+WHERE entry_id=? AND action='REVOKE'`, entryID).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM cache_outbox
+WHERE entry_id=? AND event_type='KNOWLEDGE_REVOKED'`, entryID).Scan(&revokeEvents); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 1 || revokeEvents != 1 {
+		t.Fatalf("audit=%d revoke_events=%d, want 1/1", audits, revokeEvents)
+	}
+	// 旧版本不能复活。
+	if err := repo.Publish(ctx, tenant, entryID, v1, 42); !errors.Is(err, ErrKnowledgeRevoked) {
+		t.Fatalf("republish revoked v1 err = %v, want ErrKnowledgeRevoked", err)
+	}
+	// 新版本仍可审核发布。
+	v2 := mustPublished(t, repo, tenant, entryID, "v2 answer")
+	if v2 != 2 {
+		t.Fatalf("v2 = %d", v2)
+	}
+	// 并发语义：published 已前进到 v2 时，按 expected v1 撤稿必须冲突。
+	if _, err := repo.Revoke(ctx, tenant, entryID, v1, 42, "stale"); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("stale revoke err = %v, want ErrVersionConflict", err)
+	}
+	// 跨租户不可见。
+	if _, err := repo.Revoke(ctx, tenant+1, entryID, 0, 42, "x"); !errors.Is(err, ErrEntryNotFound) {
+		t.Fatalf("cross-tenant revoke err = %v, want ErrEntryNotFound", err)
+	}
+	_ = outbox
+}

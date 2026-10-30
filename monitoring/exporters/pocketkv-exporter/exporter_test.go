@@ -100,6 +100,15 @@ func sampleInfo() string {
 		"rdma_fs_cm_rejects:0\n" +
 		"rdma_fs_resource_rejects:0\n" +
 		"rdma_fs_connected_jobs:2\n" +
+		"rdma_fs_wc_retry_exc_err:3\n" +
+		"rdma_fs_wc_flush_err:0\n" +
+		"rdma_fs_wc_remote_access_err:0\n" +
+		"rdma_fs_wc_local_prot_err:0\n" +
+		"rdma_fs_wc_rnr_retry_exc_err:0\n" +
+		"rdma_fs_wc_other_errors:1\n" +
+		"rdma_fs_post_send_errors:2\n" +
+		"rdma_fs_poll_cq_failures:1\n" +
+		"rdma_fs_cm_disconnects:4\n" +
 		"aof_submitted:100\n" +
 		"aof_written:90\n" +
 		"aof_fatal:1\n" +
@@ -231,6 +240,19 @@ func TestExporterScrapeAndMapping(t *testing.T) {
 	if v := metricValue(t, fams, "pocketkv_replica_transport_state",
 		map[string]string{"slot": "0", "state": "ebpf"}); v != 1 {
 		t.Fatalf("slot transport = %v", v)
+	}
+	if v := metricValue(t, fams, "pocketkv_rdma_fs_wc_errors_total",
+		map[string]string{"status": "RETRY_EXC_ERR"}); v != 3 {
+		t.Fatalf("wc retry errors = %v", v)
+	}
+	if v := metricValue(t, fams, "pocketkv_rdma_fs_post_send_errors_total", nil); v != 2 {
+		t.Fatalf("post send errors = %v", v)
+	}
+	if v := metricValue(t, fams, "pocketkv_rdma_fs_poll_cq_failures_total", nil); v != 1 {
+		t.Fatalf("poll failures = %v", v)
+	}
+	if v := metricValue(t, fams, "pocketkv_rdma_fs_cm_disconnects_total", nil); v != 4 {
+		t.Fatalf("cm disconnects = %v", v)
 	}
 	for state, want := range map[string]float64{"active": 1, "sending": 2, "waiting": 3} {
 		if v := metricValue(t, fams, "pocketkv_rdma_fullsync_jobs", map[string]string{"state": state}); v != want {

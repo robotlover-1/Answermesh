@@ -186,6 +186,32 @@ func TestKnowledgeAdminFlow(t *testing.T) {
 		t.Fatalf("published answer = %+v", got)
 	}
 
+	// 撤稿：普通用户无权限；管理员撤稿后读取变为 NotFound；旧版本禁止重发。
+	if _, err := callSession(t, nil, svc.revoke, contract.KnowledgeRevokeRequest{
+		IdentityToken: user, EntryID: entryID, ExpectedVersion: v2, Reason: "x",
+	}); err == nil {
+		t.Fatal("user revoke should be denied")
+	}
+	out, err = callSession(t, nil, svc.revoke, contract.KnowledgeRevokeRequest{
+		IdentityToken: admin, EntryID: entryID, ExpectedVersion: v2, Reason: "policy",
+	})
+	if err != nil {
+		t.Fatalf("admin revoke: %v", err)
+	}
+	if got := out.(*contract.KnowledgeRevokeResponse).RevokedVersion; got != v2 {
+		t.Fatalf("revoked version = %d, want %d", got, v2)
+	}
+	if _, err := callSession(t, nil, svc.getPublished, contract.KnowledgeGetPublishedRequest{
+		IdentityToken: user, EntryID: entryID,
+	}); err == nil {
+		t.Fatal("revoked knowledge should not be readable")
+	}
+	if _, err := callSession(t, nil, svc.publish, contract.KnowledgePublishRequest{
+		IdentityToken: admin, EntryID: entryID, Version: version,
+	}); err == nil {
+		t.Fatal("revoked v1 must not be republished")
+	}
+
 	// 跨租户不可见。
 	other := knowledgeToken(t, tenant+1, 2, "user")
 	_, err = callSession(t, nil, svc.getPublished, contract.KnowledgeGetPublishedRequest{

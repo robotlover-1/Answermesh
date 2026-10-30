@@ -95,6 +95,10 @@ openssl rand -hex 32        # 输出填入 AI_CHAT_IDENTITY_SECRET
 知识审核/发布接口还要求 `role=admin`：把管理员用户 id（users.id）填入
 `AI_CHAT_IDENTITY_ADMIN_USER_IDS`（逗号分隔），backend 签发 token 时带上该角色。
 
+知识撤稿：`POST /api/v1/admin/knowledge/:id/revoke`（`expected_version` 可选乐观锁，
+`reason` 审计）。撤稿后 MySQL `published_version=0`，旧不可变缓存键不会再被读取；
+`revoked_version` 阻止旧版本重新发布，只有更高的新版本可审核后再发布。
+
 聊天主链路 `chat.completion[_stream]` 也携带可选 `identity_token` 与 `session_id`：
 服务端用 claims 中的 tenant/user 幂等写入 `llm_usage_events`/`usage_daily`（按 request_id 去重）；
 `session_id>0` 时再把本轮 user+assistant 最终消息写入 `chat_messages`。旧客户端不传时行为不变。

@@ -89,6 +89,12 @@ Exporter（角色依次 master/slave/slave）。端口可用
   副本 ACK 过期、AOF 滞后、zRPC 错误率、入库失败/积压、MySQL 连接/锁等待。
 - 看板：01 存储概览、02 内存池、03 多 Slave 复制、04 RDMA、05 AOF、
   06 AnswerMesh 业务、07 MySQL 运维、08 MySQL 业务。
+- RDMA 首因排障：`pocketkv_rdma_fs_wc_errors_total{status}`、
+  `pocketkv_rdma_fs_post_send_errors_total`、`pocketkv_rdma_fs_poll_cq_failures_total`、
+  `pocketkv_rdma_fs_cm_disconnects_total`；INFO 的 `rdma_fs_first_errors` 保留最近
+  8 次 job 首错（含 tid/qp/wr/进度），job 销毁后仍可查。
+- 正常双 Slave 零非预期 CQE 验收：`make check-multi-rdma-normal`（默认 5 轮，
+  要求 Δcq_errors=0、Δfailed=0、WRITE 区间重叠、无 TCP 回退）。
 
 ## MySQL 监控与只读数据源
 
@@ -113,7 +119,8 @@ password=<STRONG_SECRET>
 mysqld_exporter --config.my-cnf=/etc/mysqld_exporter.cnf --web.listen-address=127.0.0.1:9104
 ```
 
-**Grafana MySQL 数据源（业务查询）**：只读账号 + 最小权限：
+**Grafana MySQL 数据源（业务查询）**：只读账号 + 最小权限（聊天日量来自
+`chat_message_daily` 增量汇总，迁移 0016/0017 创建并回填，不再每次扫原始消息表）：
 
 ```sql
 CREATE USER 'grafana_ro'@'<GRAFANA_HOST>' IDENTIFIED BY '<STRONG_SECRET>';

@@ -34,6 +34,21 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "RDMA CQ 错误增长（{{ $labels.instance }}）"
+      - alert: PocketKVRDMAWCErrors
+        expr: increase(pocketkv_rdma_fs_wc_errors_total[5m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "RDMA fullsync 出现新的 WC 错误（{{ $labels.status }}）"
+      - alert: PocketKVRDMAPostSendErrors
+        expr: increase(pocketkv_rdma_fs_post_send_errors_total[5m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "ibv_post_send 出现新的错误"
+      - alert: PocketKVRDMACMQCDisconnects
+        expr: increase(pocketkv_rdma_fs_cm_disconnects_total[5m]) > 3
+        labels: { severity: warning }
+        annotations:
+          summary: "RDMA fullsync CM 断链/拒绝次数异常"
       - alert: PocketKVRDMAFullsyncStuck
         expr: pocketkv_rdma_fullsync_jobs{state="sending"} > 0
         for: 30m

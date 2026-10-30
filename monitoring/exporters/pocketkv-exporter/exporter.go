@@ -39,6 +39,10 @@ type descSet struct {
 	rdmaCMRejects       *prometheus.Desc
 	rdmaResourceRejects *prometheus.Desc
 	rdmaConnectedJobs   *prometheus.Desc
+	rdmaWCErrors        *prometheus.Desc
+	rdmaPostSendErrors  *prometheus.Desc
+	rdmaPollFailures    *prometheus.Desc
+	rdmaCMDisconnects   *prometheus.Desc
 
 	aofSubmitted      *prometheus.Desc
 	aofWritten        *prometheus.Desc
@@ -95,6 +99,10 @@ func newDescSet() *descSet {
 		rdmaCMRejects:       d("rdma_cm_rejects_total", "RDMA CM 连接拒绝次数。"),
 		rdmaResourceRejects: d("rdma_resource_rejects_total", "RDMA 资源预算拒绝次数。"),
 		rdmaConnectedJobs:   d("rdma_connected_jobs", "当前已建立连接的 RDMA job 数。"),
+		rdmaWCErrors:        d("rdma_fs_wc_errors_total", "RDMA fullsync 完成错误，按 IBV_WC_STATUS 固定枚举分类。", "status"),
+		rdmaPostSendErrors:  d("rdma_fs_post_send_errors_total", "ibv_post_send 返回错误次数（含 EAGAIN 重试失败）。"),
+		rdmaPollFailures:    d("rdma_fs_poll_cq_failures_total", "ibv_poll_cq 返回负值次数。"),
+		rdmaCMDisconnects:   d("rdma_fs_cm_disconnects_total", "fullsync job 的 CM 断链/拒绝/不可达事件次数。"),
 
 		aofSubmitted:      d("aof_submitted_bytes", "AOF 已提交写入的字节偏移。"),
 		aofWritten:        d("aof_written_bytes", "AOF 已完成 fsync 的字节偏移；差额为持久化滞后。"),
@@ -164,6 +172,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 		d.proxyCacheBytes,
 		d.rdmaJobs, d.rdmaCompleted, d.rdmaFailed, d.rdmaCQErrors,
 		d.rdmaCMRejects, d.rdmaResourceRejects, d.rdmaConnectedJobs,
+		d.rdmaWCErrors, d.rdmaPostSendErrors, d.rdmaPollFailures, d.rdmaCMDisconnects,
 		d.aofSubmitted, d.aofWritten, d.aofFatal, d.replAckAge,
 		d.replSlotApplied, d.replSlotDurable, d.replSlotAckAge, d.replSlotTransport,
 		d.aofOutstanding, d.aofBatchCount, d.aofBatchDur, d.aofErrorCount, d.aofMaxBatchAge,
@@ -410,6 +419,19 @@ func (e *Exporter) collectRDMA(ch chan<- prometheus.Metric, info map[string]stri
 	e.emitUint(ch, info, "rdma_fs_cm_rejects", e.descs.rdmaCMRejects, prometheus.CounterValue)
 	e.emitUint(ch, info, "rdma_fs_resource_rejects", e.descs.rdmaResourceRejects, prometheus.CounterValue)
 	e.emitUint(ch, info, "rdma_fs_connected_jobs", e.descs.rdmaConnectedJobs, prometheus.GaugeValue)
+	for key, status := range map[string]string{
+		"rdma_fs_wc_retry_exc_err":     "RETRY_EXC_ERR",
+		"rdma_fs_wc_flush_err":         "WR_FLUSH_ERR",
+		"rdma_fs_wc_remote_access_err": "REM_ACCESS_ERR",
+		"rdma_fs_wc_local_prot_err":    "LOC_PROT_ERR",
+		"rdma_fs_wc_rnr_retry_exc_err": "RNR_RETRY_EXC_ERR",
+		"rdma_fs_wc_other_errors":      "OTHER",
+	} {
+		e.emitUint(ch, info, key, e.descs.rdmaWCErrors, prometheus.CounterValue, status)
+	}
+	e.emitUint(ch, info, "rdma_fs_post_send_errors", e.descs.rdmaPostSendErrors, prometheus.CounterValue)
+	e.emitUint(ch, info, "rdma_fs_poll_cq_failures", e.descs.rdmaPollFailures, prometheus.CounterValue)
+	e.emitUint(ch, info, "rdma_fs_cm_disconnects", e.descs.rdmaCMDisconnects, prometheus.CounterValue)
 }
 
 func (e *Exporter) collectAOF(ch chan<- prometheus.Metric, info map[string]string) {

@@ -17,6 +17,8 @@ var (
 	ErrVersionConflict = errors.New("knowledge version conflict")
 	// ErrKnowledgePublished：已发布版本不允许直接改变审核状态，需显式撤稿流程。
 	ErrKnowledgePublished = errors.New("published knowledge version cannot change review status")
+	// ErrKnowledgeRevoked：被撤稿的历史版本不允许再次发布。
+	ErrKnowledgeRevoked = errors.New("knowledge version was revoked and cannot be republished")
 )
 
 type KnowledgeVersion struct {
@@ -62,10 +64,10 @@ func (r *KnowledgeRepository) SubmitVersion(ctx context.Context, tenantID, entry
 	}
 	var version uint32
 	err := r.tx.run(ctx, "submit_knowledge", func(tx *sql.Tx) error {
-		var published uint32
+		var published, revoked uint32
 		if err := tx.QueryRowContext(ctx,
-			"SELECT published_version FROM knowledge_entries WHERE id=? AND tenant_id=? FOR UPDATE",
-			entryID, tenantID).Scan(&published); err != nil {
+			"SELECT published_version, revoked_version FROM knowledge_entries WHERE id=? AND tenant_id=? FOR UPDATE",
+			entryID, tenantID).Scan(&published, &revoked); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrEntryNotFound
 			}
@@ -132,10 +134,10 @@ func (r *KnowledgeRepository) Publish(ctx context.Context, tenantID, entryID uin
 		return fmt.Errorf("%w: tenant/entry/version required", ErrInvalidArgument)
 	}
 	return r.tx.run(ctx, "publish_knowledge", func(tx *sql.Tx) error {
-		var published uint32
+		var published, revoked uint32
 		if err := tx.QueryRowContext(ctx,
-			"SELECT published_version FROM knowledge_entries WHERE id=? AND tenant_id=? FOR UPDATE",
-			entryID, tenantID).Scan(&published); err != nil {
+			"SELECT published_version, revoked_version FROM knowledge_entries WHERE id=? AND tenant_id=? FOR UPDATE",
+			entryID, tenantID).Scan(&published, &revoked); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrEntryNotFound
 			}
@@ -156,12 +158,20 @@ func (r *KnowledgeRepository) Publish(ctx context.Context, tenantID, entryID uin
 		if version == published {
 			return nil // 幂等重试
 		}
+		if revoked != 0 && version <= revoked {
+			return ErrKnowledgeRevoked
+		}
 		if version < published {
 			return ErrVersionConflict
 		}
 		if _, err := tx.ExecContext(ctx,
 			"UPDATE knowledge_entries SET published_version=?, status='published' WHERE id=? AND tenant_id=?",
 			version, entryID, tenantID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO knowledge_audit_events(tenant_id, entry_id, version, action, actor_id, reason)
+VALUES(?,?,?,'PUBLISH',?,'')`, tenantID, entryID, version, actorID); err != nil {
 			return err
 		}
 		eventKey := fmt.Sprintf("knowledge:%d:%d", entryID, version)
@@ -171,6 +181,64 @@ VALUES(?,?,?,'KNOWLEDGE_PUBLISHED')
 ON DUPLICATE KEY UPDATE id=id`, eventKey, entryID, version)
 		return err
 	})
+}
+
+// Revoke 取消当前公开版本：published_version=0，记录 revoked_version 阻止旧版本重发，
+// 写审计与 Outbox（KNOWLEDGE_REVOKED）。expected_version>0 时做乐观并发检查；
+// 重复撤稿幂等（不重复审计/事件）。
+func (r *KnowledgeRepository) Revoke(ctx context.Context, tenantID, entryID uint64,
+	expectedVersion uint32, actorID uint64, reason string) (uint32, error) {
+	if tenantID == 0 || entryID == 0 || actorID == 0 {
+		return 0, fmt.Errorf("%w: tenant/entry/actor required", ErrInvalidArgument)
+	}
+	if len(reason) > 255 {
+		reason = reason[:255]
+	}
+	var revokedOut uint32
+	err := r.tx.run(ctx, "revoke_knowledge", func(tx *sql.Tx) error {
+		var published, revoked uint32
+		if err := tx.QueryRowContext(ctx, `
+SELECT published_version, revoked_version FROM knowledge_entries
+WHERE id=? AND tenant_id=? FOR UPDATE`, entryID, tenantID).Scan(&published, &revoked); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrEntryNotFound
+			}
+			return err
+		}
+		if published == 0 {
+			// 已撤稿/未发布：重复撤稿按幂等成功处理，但 expected 必须匹配。
+			if expectedVersion != 0 && expectedVersion != revoked {
+				return ErrVersionConflict
+			}
+			revokedOut = revoked
+			return nil
+		}
+		if expectedVersion != 0 && expectedVersion != published {
+			return ErrVersionConflict
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE knowledge_entries
+SET published_version=0, status='revoked', revoked_version=?, revoked_at=CURRENT_TIMESTAMP(3),
+    revoked_by=?, revoke_reason=?
+WHERE id=? AND tenant_id=?`, published, actorID, reason, entryID, tenantID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO knowledge_audit_events(tenant_id, entry_id, version, action, actor_id, reason)
+VALUES(?,?,?,'REVOKE',?,?)`, tenantID, entryID, published, actorID, reason); err != nil {
+			return err
+		}
+		eventKey := fmt.Sprintf("knowledge:%d:revoke:%d", entryID, published)
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO cache_outbox(event_key, entry_id, version, event_type)
+VALUES(?,?,?,'KNOWLEDGE_REVOKED')
+ON DUPLICATE KEY UPDATE id=id`, eventKey, entryID, published); err != nil {
+			return err
+		}
+		revokedOut = published
+		return nil
+	})
+	return revokedOut, err
 }
 
 // GetPublishedVersion 返回权威版本；published_version=0 表示尚未发布。

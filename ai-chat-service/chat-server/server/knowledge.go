@@ -37,6 +37,9 @@ func RegisterKnowledgeZRPC(zsrv *zrpc.Server, repo *data.KnowledgeRepository,
 	if err := reg(contract.MethodKnowledgePublish, s.publish); err != nil {
 		return err
 	}
+	if err := reg(contract.MethodKnowledgeRevoke, s.revoke); err != nil {
+		return err
+	}
 	return reg(contract.MethodKnowledgeGetPublished, s.getPublished)
 }
 
@@ -150,6 +153,23 @@ func (s *knowledgeService) publish(ctx context.Context, raw json.RawMessage) (an
 		return nil, knowledgeStatus(err)
 	}
 	return &contract.KnowledgePublishResponse{PublishedVersion: published}, nil
+}
+
+func (s *knowledgeService) revoke(ctx context.Context, raw json.RawMessage) (any, error) {
+	var req contract.KnowledgeRevokeRequest
+	if err := decodeRequest(raw, &req); err != nil {
+		return nil, err
+	}
+	claims, err := s.adminClaims(req.IdentityToken)
+	if err != nil {
+		return nil, err
+	}
+	revoked, err := s.repo.Revoke(ctx, claims.TenantID, req.EntryID, req.ExpectedVersion,
+		claims.UserID, req.Reason)
+	if err != nil {
+		return nil, knowledgeStatus(err)
+	}
+	return &contract.KnowledgeRevokeResponse{RevokedVersion: revoked}, nil
 }
 
 func (s *knowledgeService) getPublished(ctx context.Context, raw json.RawMessage) (any, error) {

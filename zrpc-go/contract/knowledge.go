@@ -55,3 +55,15 @@ type KnowledgeGetPublishedResponse struct {
 	Version uint32 `json:"version"`
 	Answer  string `json:"answer"`
 }
+
+// KnowledgeRevokeRequest 撤稿当前公开版本；ExpectedVersion>0 时做乐观并发检查。
+type KnowledgeRevokeRequest struct {
+	IdentityToken   string `json:"identity_token"`
+	EntryID         uint64 `json:"entry_id"`
+	ExpectedVersion uint32 `json:"expected_version"`
+	Reason          string `json:"reason"`
+}
+
+type KnowledgeRevokeResponse struct {
+	RevokedVersion uint32 `json:"revoked_version"`
+}

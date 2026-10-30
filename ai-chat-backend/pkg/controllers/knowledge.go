@@ -126,3 +126,29 @@ func (chat *ChatService) GetPublishedKnowledge(ctx *gin.Context) {
 	}
 	ctx.JSON(200, gin.H{"status": "Success", "message": "", "data": resp})
 }
+
+func (chat *ChatService) RevokeKnowledge(ctx *gin.Context) {
+	id, err := parseID(ctx.Param("id"))
+	if err != nil || id == 0 {
+		ctx.JSON(400, gin.H{"status": "Fail", "message": "参数错误", "data": nil})
+		return
+	}
+	var req struct {
+		ExpectedVersion uint32 `json:"expected_version"`
+		Reason          string `json:"reason"`
+	}
+	if err := ctx.ShouldBindJSON(&req); err != nil && err.Error() != "EOF" {
+		ctx.JSON(400, gin.H{"status": "Fail", "message": "参数错误", "data": nil})
+		return
+	}
+	token, ok := chat.identityToken(ctx)
+	if !ok {
+		return
+	}
+	resp, err := ai_chat_service.RevokeKnowledge(ctx.Request.Context(), token, id, req.ExpectedVersion, req.Reason)
+	if err != nil {
+		chat.failRPC(ctx, err)
+		return
+	}
+	ctx.JSON(200, gin.H{"status": "Success", "message": "", "data": resp})
+}

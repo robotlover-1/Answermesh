@@ -186,6 +186,67 @@ func TestAppendConversationIdempotent(t *testing.T) {
 	if content != "original-q" {
 		t.Fatalf("duplicate request overwrote final message: %q", content)
 	}
+	// 日汇总：首写 user/assistant 各 +1；重试与内容冲突都不得双计。
+	var daily int
+	if err := db.QueryRow(`SELECT messages FROM chat_message_daily
+WHERE tenant_id=? AND role='user' AND day=CURRENT_DATE()`, tenant).Scan(&daily); err != nil {
+		t.Fatal(err)
+	}
+	if daily != 1 {
+		t.Fatalf("daily user messages = %d, want 1", daily)
+	}
+}
+
+// PR-M1：增量日汇总与原始消息逐日核对一致；回填 SQL 重跑幂等。
+func TestChatMessageDailyMatchesRaw(t *testing.T) {
+	r, db, tenant := setupSessionRepo(t)
+	ctx := context.Background()
+	const user = uint64(21)
+	s1 := mustSession(t, r, tenant, user, "daily-a")
+	s2 := mustSession(t, r, tenant, user, "daily-b")
+	for i, sid := range []uint64{s1, s2} {
+		if _, _, _, err := r.AppendConversation(ctx, tenant, user, sid, AppendInput{
+			RequestID:   fmt.Sprintf("daily-req-%d-%d", tenant, i),
+			UserContent: "q", AssistantContent: "a",
+		}); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	// 同一请求重试不双计。
+	if _, _, _, err := r.AppendConversation(ctx, tenant, user, s1, AppendInput{
+		RequestID: fmt.Sprintf("daily-req-%d-0", tenant), UserContent: "q", AssistantContent: "a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var raw, daily int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM chat_messages m
+JOIN chat_sessions s ON s.id=m.session_id WHERE s.tenant_id=?`, tenant).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COALESCE(SUM(messages),0) FROM chat_message_daily
+WHERE tenant_id=?`, tenant).Scan(&daily); err != nil {
+		t.Fatal(err)
+	}
+	if raw != 4 || daily != raw {
+		t.Fatalf("raw=%d daily=%d, want 4/4", raw, daily)
+	}
+	// 回填使用绝对值覆盖，重跑幂等。
+	if _, err := db.Exec(`
+INSERT INTO chat_message_daily(tenant_id, day, role, messages)
+SELECT s.tenant_id, DATE(m.created_at), m.role, COUNT(*)
+FROM chat_messages m JOIN chat_sessions s ON s.id=m.session_id
+WHERE s.tenant_id=?
+GROUP BY s.tenant_id, DATE(m.created_at), m.role
+ON DUPLICATE KEY UPDATE messages=VALUES(messages)`, tenant); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COALESCE(SUM(messages),0) FROM chat_message_daily
+WHERE tenant_id=?`, tenant).Scan(&daily); err != nil {
+		t.Fatal(err)
+	}
+	if daily != raw {
+		t.Fatalf("after backfill daily=%d raw=%d", daily, raw)
+	}
 }
 
 func TestSessionRepoTenantIsolation(t *testing.T) {

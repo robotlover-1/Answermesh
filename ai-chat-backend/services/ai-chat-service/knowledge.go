@@ -45,3 +45,11 @@ func GetPublishedKnowledge(ctx context.Context, identityToken string, entryID ui
 	}, out)
 	return out, err
 }
+
+func RevokeKnowledge(ctx context.Context, identityToken string, entryID uint64, expectedVersion uint32, reason string) (*contract.KnowledgeRevokeResponse, error) {
+	out := &contract.KnowledgeRevokeResponse{}
+	err := callUnary(ctx, contract.MethodKnowledgeRevoke, &contract.KnowledgeRevokeRequest{
+		IdentityToken: identityToken, EntryID: entryID, ExpectedVersion: expectedVersion, Reason: reason,
+	}, out)
+	return out, err
+}
