@@ -81,7 +81,7 @@ func newDescSet() *descSet {
 
 		masterOffset:  d("replication_master_offset_bytes", "master_repl_offset（字节）。"),
 		appliedOffset: d("replication_applied_offset_bytes", "Slave 已应用的复制 offset（字节）。"),
-		durableOffset: d("replication_durable_offset_bytes", "Slave 已持久化的复制 offset（字节）。"),
+		durableOffset: d("replication_durable_offset_bytes", "Slave 已确认写入 AOF 的 offset（AOF 接受/入队边界，不等于 fsync 落盘水位；落盘确认需看 AOF CQE/错误指标）。"),
 		commitGap:     d("commit_gap_total", "Commit Gate 观测到的复制缺口次数。"),
 		commitTimeout: d("commit_timeout_total", "Commit Gate 超时次数。"),
 		commitDesync:  d("commit_desync_total", "Commit Gate 失步次数。"),
@@ -106,7 +106,7 @@ func newDescSet() *descSet {
 		aofMaxBatchAge:    d("aof_max_batch_age_seconds", "观测到的最大攒批年龄（崩溃窗口分量）。"),
 		replAckAge:        d("replication_min_ack_age_seconds", "所有副本中最早一次 REPLACK 距今的秒数（无副本时为 0）。"),
 		replSlotApplied:   d("replica_applied_offset_bytes", "per-slot 副本已应用 offset（eBPF slot 0..7）。", "slot"),
-		replSlotDurable:   d("replica_durable_offset_bytes", "per-slot 副本已持久化 offset（eBPF slot 0..7）。", "slot"),
+		replSlotDurable:   d("replica_durable_offset_bytes", "per-slot 副本已确认写入 AOF 的 offset（入队边界，不等于 fsync 水位）。", "slot"),
 		replSlotAckAge:    d("replica_ack_age_seconds", "per-slot 副本 REPLACK 年龄（秒）。", "slot"),
 		replSlotTransport: d("replica_transport_state", "per-slot 副本传输状态（固定枚举，值恒为 1）。", "slot", "state"),
 

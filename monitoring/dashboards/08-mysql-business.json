@@ -41,13 +41,13 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  $__timeGroupAlias(created_at, '1d'),\n  SUM(CASE WHEN source='llm' THEN 1 ELSE 0 END) AS llm_calls,\n  SUM(CASE WHEN source LIKE 'cache%' THEN 1 ELSE 0 END) AS cache_hits\nFROM llm_usage_events\nWHERE $__timeFilter(created_at)\nGROUP BY 1\nORDER BY 1;",
+          "rawSql": "SELECT day AS time, llm_calls, cache_hits\nFROM vw_llm_usage_daily\nWHERE $__timeFilter(day)\nORDER BY day;",
           "refId": "A"
         }
       ],
-      "title": "每日模型调用量（llm_usage_events）",
+      "title": "每日模型调用量（聚合视图）",
       "type": "timeseries",
-      "description": "需要先执行 db/migrations 中的 llm_usage_events 迁移。"
+      "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
     },
     {
       "datasource": {
@@ -84,13 +84,13 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  $__timeGroupAlias(created_at, '1d'),\n  SUM(input_tokens + output_tokens) AS actual_tokens,\n  SUM(estimated_saved_tokens) AS estimated_saved_tokens\nFROM llm_usage_events\nWHERE $__timeFilter(created_at)\nGROUP BY 1\nORDER BY 1;",
+          "rawSql": "SELECT day AS time, actual_tokens, estimated_saved_tokens\nFROM vw_llm_usage_daily\nWHERE $__timeFilter(day)\nORDER BY day;",
           "refId": "A"
         }
       ],
-      "title": "真实 tokens vs 估算节省（30 天）",
+      "title": "真实 tokens vs 估算节省（聚合视图）",
       "type": "timeseries",
-      "description": "实际用量与缓存节省估算分属两条曲线，不可相加作为账单。"
+      "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
     },
     {
       "datasource": {
@@ -119,12 +119,13 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  review_status,\n  COUNT(*) AS versions,\n  MIN(created_at) AS oldest\nFROM knowledge_versions\nGROUP BY review_status\nORDER BY versions DESC;",
+          "rawSql": "SELECT * FROM vw_knowledge_review_queue ORDER BY versions DESC;",
           "refId": "A"
         }
       ],
-      "title": "知识审核队列（近似实时）",
-      "type": "table"
+      "title": "知识审核队列（聚合视图）",
+      "type": "table",
+      "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
     },
     {
       "datasource": {
@@ -153,12 +154,13 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  status,\n  COUNT(*) AS jobs,\n  MIN(created_at) AS oldest_created,\n  SUM(attempts) AS total_attempts\nFROM cache_outbox\nGROUP BY status\nORDER BY jobs DESC;",
+          "rawSql": "SELECT * FROM vw_outbox_backlog ORDER BY jobs DESC;",
           "refId": "A"
         }
       ],
-      "title": "Outbox 积压",
-      "type": "table"
+      "title": "Outbox 积压（聚合视图）",
+      "type": "table",
+      "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
     },
     {
       "datasource": {
@@ -195,12 +197,13 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  $__timeGroupAlias(created_at, '1d'),\n  COUNT(*) AS messages\nFROM chat_messages\nWHERE $__timeFilter(created_at)\nGROUP BY 1\nORDER BY 1;",
+          "rawSql": "SELECT day AS time, messages\nFROM vw_chat_message_daily\nWHERE $__timeFilter(day)\nORDER BY day;",
           "refId": "A"
         }
       ],
-      "title": "每日消息量（chat_messages）",
-      "type": "timeseries"
+      "title": "每日消息量（聚合视图）",
+      "type": "timeseries",
+      "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
     }
   ],
   "refresh": "10s",

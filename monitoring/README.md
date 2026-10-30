@@ -117,7 +117,11 @@ mysqld_exporter --config.my-cnf=/etc/mysqld_exporter.cnf --web.listen-address=12
 
 ```sql
 CREATE USER 'grafana_ro'@'<GRAFANA_HOST>' IDENTIFIED BY '<STRONG_SECRET>';
-GRANT SELECT ON ai_chat.* TO 'grafana_ro'@'<GRAFANA_HOST>';
+-- 只授权 0009 迁移创建的聚合视图，不授予原始聊天内容读取权限。
+GRANT SELECT ON ai_chat.vw_chat_message_daily     TO 'grafana_ro'@'<GRAFANA_HOST>';
+GRANT SELECT ON ai_chat.vw_knowledge_review_queue TO 'grafana_ro'@'<GRAFANA_HOST>';
+GRANT SELECT ON ai_chat.vw_outbox_backlog         TO 'grafana_ro'@'<GRAFANA_HOST>';
+GRANT SELECT ON ai_chat.vw_llm_usage_daily        TO 'grafana_ro'@'<GRAFANA_HOST>';
 ```
 
 Grafana 启动前导出 `MYSQL_RO_HOST`、`MYSQL_RO_DB`、`MYSQL_RO_USER`、`MYSQL_RO_PASSWORD`，
@@ -141,6 +145,10 @@ AI_CHAT_MYSQL_DSN='user:pass@tcp(127.0.0.1:3306)/ai_chat?parseTime=true&charset=
 
 ## 注意事项
 
+- Prometheus/Grafana 默认只监听 `127.0.0.1`；对外部署前改 Grafana 默认密码，并显式设置
+  `PROM_LISTEN_ADDR` / `GF_SERVER_HTTP_ADDR`，再配防火墙或内网 ACL。
+- chat_records、会话历史、用量账本走内存有界队列：SIGTERM 会排空，但 SIGKILL/断电
+  仍可能丢最后一小段；若用量要用于准确计费，应改为持久化 Outbox/同步写入。
 - 监控独立于 ai-chat 主链路；缺二进制时 `start.sh` 报错退出，不影响 8 个服务
 - Prometheus 数据落在 `prometheus/data/`，Grafana 数据落在 `grafana/data/`（gitignore，删掉即重置）
 - 指标计数是进程内的，服务重启会清零（由 Prometheus 侧时序持久化，重启 Prometheus 后历史保留）

@@ -45,7 +45,7 @@ make test           # RESP 分片解析、指标映射、目标断线容错
 | `pocketkv_allocator_allocated_bytes` / `requested_bytes` | Gauge | MEMSTAT |
 | `pocketkv_allocator_fragmentation_ratio` / `slab_utilization_ratio` | Gauge | MEMSTAT |
 | `pocketkv_allocator_class_{pages,chunks,free_chunks,page_bytes}{size_class}` | Gauge | MEMSTAT（19 类） |
-| `pocketkv_replication_{master,applied,durable}_offset_bytes` | Gauge | INFO |
+| `pocketkv_replication_{master,applied,durable}_offset_bytes` | Gauge | INFO（durable 是 AOF 接受/入队边界，不等于 fsync 落盘水位） |
 | `pocketkv_commit_{gap,timeout,desync}_total` | Counter | INFO |
 | `pocketkv_rdma_fullsync_jobs{state}` | Gauge | INFO |
 | `pocketkv_rdma_fullsync_{completed,failed}_total` | Counter | INFO |

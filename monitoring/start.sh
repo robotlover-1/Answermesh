@@ -18,21 +18,23 @@ fi
 port_listening() { ss -tln 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${1}$"; }
 
 start_prom() {
-  if port_listening 9090; then echo "  [prometheus] ✔ already running (9090)"; return 0; fi
+  local prom_addr="${PROM_LISTEN_ADDR:-127.0.0.1:9090}"
+  local prom_port="${prom_addr##*:}"
+  if port_listening "$prom_port"; then echo "  [prometheus] ✔ already running ($prom_port)"; return 0; fi
   # exec 让后台 job 的 PID 就是 prometheus 本体（否则 pid 文件记录的是中间 subshell）。
   ( cd "$ROOT" && exec nohup "$ROOT/bin/prometheus" \
       --config.file=prometheus/prometheus.yml \
       --storage.tsdb.path=prometheus/data \
-      --web.listen-address=:9090 \
+      --web.listen-address="$prom_addr" \
       >"$LOG_DIR/prometheus.log" 2>&1 ) & echo $! > "$PID_DIR/prometheus.pid"
   local i
-  for i in $(seq 1 40); do port_listening 9090 && { echo "  [prometheus] ✔ 9090 listening"; return 0; }; sleep 0.5; done
+  for i in $(seq 1 40); do port_listening "$prom_port" && { echo "  [prometheus] ✔ $prom_addr listening"; return 0; }; sleep 0.5; done
   echo "  [prometheus] ✘ 启动失败, 日志尾部:"; tail -n 8 "$LOG_DIR/prometheus.log" | sed 's/^/    /'; return 1
 }
 
 start_graf() {
   if port_listening 3000; then echo "  [grafana] ✔ already running (3000)"; return 0; fi
-  ( cd "$ROOT" && GF_SERVER_HTTP_PORT=3000 \
+  ( cd "$ROOT" && GF_SERVER_HTTP_ADDR="${GF_SERVER_HTTP_ADDR:-127.0.0.1}" GF_SERVER_HTTP_PORT=3000 \
       GF_PATHS_DATA="$ROOT/grafana/data" \
       GF_PATHS_PROVISIONING="$ROOT/config/grafana/provisioning" \
       GF_SECURITY_DISABLE_INITIAL_ADMIN_PASSWORD_CHANGE=true \
@@ -90,4 +92,4 @@ start_prom
 start_graf
 echo
 echo "✔ Prometheus: http://localhost:9090  （/targets 看采集状态）"
-echo "✔ Grafana:    http://localhost:3000  （admin/admin）"
+echo "✔ Grafana:    http://localhost:3000  （默认 admin/admin，仅 loopback；对外部署前必须改密码并显式设置 GF_SERVER_HTTP_ADDR）"
