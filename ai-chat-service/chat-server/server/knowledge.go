@@ -160,11 +160,7 @@ func (s *knowledgeService) getPublished(ctx context.Context, raw json.RawMessage
 	if err != nil {
 		return nil, err
 	}
-	answer, err := s.read.PublishedAnswer(ctx, claims.TenantID, req.EntryID)
-	if err != nil {
-		return nil, knowledgeStatus(err)
-	}
-	version, err := s.repo.GetPublishedVersion(ctx, claims.TenantID, req.EntryID)
+	answer, version, err := s.read.PublishedAnswer(ctx, claims.TenantID, req.EntryID)
 	if err != nil {
 		return nil, knowledgeStatus(err)
 	}

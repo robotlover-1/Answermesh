@@ -276,3 +276,48 @@ ORDER BY id DESC LIMIT 20`, tenant, user, uint64(0), uint64(0))
 		t.Fatalf("session pagination does not use idx_user_cursor:\n%s", sessPlan)
 	}
 }
+
+// P1-01：同一 request_id 在不同会话（甚至不同租户）必须各自落库，不能静默复用。
+func TestAppendConversationSameRequestDifferentSessions(t *testing.T) {
+	r, db, tenant := setupSessionRepo(t)
+	const user = uint64(12)
+	ctx := context.Background()
+	sessionA := mustSession(t, r, tenant, user, "same-req-a")
+	sessionB := mustSession(t, r, tenant, user, "same-req-b")
+	req := fmt.Sprintf("same-req-%d", tenant)
+
+	uidA, aidA, createdA, err := r.AppendConversation(ctx, tenant, user, sessionA, AppendInput{
+		RequestID: req, UserContent: "qa", AssistantContent: "aa",
+	})
+	if err != nil || !createdA {
+		t.Fatalf("append A = %v %v %v", uidA, createdA, err)
+	}
+	uidB, aidB, createdB, err := r.AppendConversation(ctx, tenant, user, sessionB, AppendInput{
+		RequestID: req, UserContent: "qb", AssistantContent: "ab",
+	})
+	if err != nil || !createdB {
+		t.Fatalf("append B = %v %v %v", uidB, createdB, err)
+	}
+	if uidA == uidB || aidA == aidB {
+		t.Fatalf("different sessions reused message ids: A(%d,%d) B(%d,%d)", uidA, aidA, uidB, aidB)
+	}
+	for _, sid := range []uint64{sessionA, sessionB} {
+		msgs, err := r.ListMessages(ctx, tenant, user, sid, 0, 10)
+		if err != nil || len(msgs) != 2 {
+			t.Fatalf("session %d messages = %d, %v", sid, len(msgs), err)
+		}
+	}
+
+	// 跨租户同一 request_id 同样独立。
+	otherTenant := tenant + 1
+	sessionC, err := r.CreateSession(ctx, otherTenant, user, "other-tenant")
+	if err != nil {
+		t.Fatalf("create other tenant session: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.Exec("DELETE FROM chat_sessions WHERE id=?", sessionC) })
+	if _, _, created, err := r.AppendConversation(ctx, otherTenant, user, sessionC, AppendInput{
+		RequestID: req, UserContent: "qc", AssistantContent: "ac",
+	}); err != nil || !created {
+		t.Fatalf("append other tenant = %v, %v", created, err)
+	}
+}

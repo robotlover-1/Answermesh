@@ -28,14 +28,20 @@ func PublishedAnswerKey(entryID uint64, version uint32) string {
 	return fmt.Sprintf("kb:answer:%d:v%d", entryID, version)
 }
 
+// KnowledgeReader 由 KnowledgeRepository 实现；测试可注入 fake 以覆盖并发发布时序。
+type KnowledgeReader interface {
+	GetPublishedVersion(ctx context.Context, tenantID, entryID uint64) (uint32, error)
+	GetVersion(ctx context.Context, tenantID, entryID uint64, version uint32) (*KnowledgeVersion, error)
+}
+
 type KnowledgeService struct {
-	repo     *KnowledgeRepository
+	repo     KnowledgeReader
 	cache    KnowledgeCache
 	cacheTTL time.Duration
 	obs      KBCacheObserver
 }
 
-func NewKnowledgeService(repo *KnowledgeRepository, cache KnowledgeCache, cacheTTL time.Duration,
+func NewKnowledgeService(repo KnowledgeReader, cache KnowledgeCache, cacheTTL time.Duration,
 	obs KBCacheObserver) *KnowledgeService {
 	if obs == nil {
 		obs = nopKBObserver{}
@@ -46,17 +52,18 @@ func NewKnowledgeService(repo *KnowledgeRepository, cache KnowledgeCache, cacheT
 	return &KnowledgeService{repo: repo, cache: cache, cacheTTL: cacheTTL, obs: obs}
 }
 
-// PublishedAnswer 先取 MySQL 权威 published_version，再读对应不可变缓存；
-// MISS 时从 MySQL 载入该版本并写缓存。缓存故障只影响延迟，不影响正确性。
-func (s *KnowledgeService) PublishedAnswer(ctx context.Context, tenantID, entryID uint64) (string, error) {
-	var lastErr error
+// PublishedAnswer 返回 (answer, version)，两者始终成对：version 是本次实际读取的
+// MySQL 权威版本。cache hit 分支也会在返回前再次确认 published_version 未变化；
+// 若读取期间有新版本发布，则按新版本重走一轮，避免出现 “version=v2, answer=v1”。
+// 缓存故障只影响延迟，不影响正确性。
+func (s *KnowledgeService) PublishedAnswer(ctx context.Context, tenantID, entryID uint64) (string, uint32, error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		version, err := s.repo.GetPublishedVersion(ctx, tenantID, entryID)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		if version == 0 {
-			return "", ErrNotPublished
+			return "", 0, ErrNotPublished
 		}
 		key := PublishedAnswerKey(entryID, version)
 		if s.cache != nil {
@@ -64,31 +71,34 @@ func (s *KnowledgeService) PublishedAnswer(ctx context.Context, tenantID, entryI
 				s.obs.KBCacheLookup("error")
 			} else if ok {
 				s.obs.KBCacheLookup("hit")
-				return ans, nil
+				// cache hit 同样要确认权威版本没有在读取期间前进。
+				current, err := s.repo.GetPublishedVersion(ctx, tenantID, entryID)
+				if err != nil {
+					return "", 0, err
+				}
+				if current == version {
+					return ans, version, nil
+				}
+				continue
 			} else {
 				s.obs.KBCacheLookup("miss")
 			}
 		}
 		kv, err := s.repo.GetVersion(ctx, tenantID, entryID, version)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		if s.cache != nil {
-			if err := s.cache.SetImmutable(ctx, key, kv.Answer, s.cacheTTL); err != nil {
-				lastErr = err // 写缓存失败不改变权威结果
-			}
+			// 写缓存失败不改变权威结果。
+			_ = s.cache.SetImmutable(ctx, key, kv.Answer, s.cacheTTL)
 		}
-		// 读取期间若有新版本发布，重新按新权威版本走一轮，避免返回已过期内容。
 		current, err := s.repo.GetPublishedVersion(ctx, tenantID, entryID)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		if current == version {
-			return kv.Answer, nil
+			return kv.Answer, version, nil
 		}
 	}
-	if lastErr != nil {
-		return "", lastErr
-	}
-	return "", ErrVersionConflict
+	return "", 0, ErrVersionConflict
 }

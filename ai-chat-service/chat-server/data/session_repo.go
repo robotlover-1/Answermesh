@@ -14,6 +14,9 @@ import (
 var (
 	ErrSessionNotFound = errors.New("chat session not found")
 	ErrInvalidArgument = errors.New("invalid session/message argument")
+	// ErrIdempotencyConflict 表示唯一键冲突命中了不属于当前会话/请求的记录；
+	// 正常索引下不应出现，作为防御性校验避免静默复用他人记录。
+	ErrIdempotencyConflict = errors.New("message idempotency scope conflict")
 )
 
 const (
@@ -171,7 +174,8 @@ LIMIT ?`,
 }
 
 // AppendConversation 在一个事务里写 user + assistant 两条最终消息，并刷新会话 updated_at。
-// 幂等：uk_request_role(request_id, role) + ON DUPLICATE KEY 保留原 id；重复请求返回同一组 id。
+// 幂等：uk_session_request_role(session_id, request_id, role) + ON DUPLICATE KEY 保留原 id；
+// 重复请求返回同一组 id，不同会话复用同一 request_id 互不影响。
 // 注意：不要在持有该事务时调用 LLM / PocketKV / HTTP。
 func (r *SessionRepository) AppendConversation(ctx context.Context, tenantID, userID, sessionID uint64, in AppendInput) (userMsgID, assistantMsgID uint64, created bool, err error) {
 	if tenantID == 0 || userID == 0 || sessionID == 0 {
@@ -236,8 +240,9 @@ func (r *SessionRepository) AppendConversation(ctx context.Context, tenantID, us
 
 func upsertFinalMessage(ctx context.Context, tx *sql.Tx, sessionID uint64, requestID, role, content string,
 	tokens int, source string) (uint64, bool, error) {
-	// 重复 request/role：保留原记录与 id（LAST_INSERT_ID(id) 让 LastInsertId 返回已有 id），
-	// 不用新内容覆盖已完成的最终消息。
+	// 幂等作用域是 (session_id, request_id, role)（migration 0007）：
+	// 重复请求保留原记录与 id（LAST_INSERT_ID(id) 让 LastInsertId 返回已有 id），
+	// 不用新内容覆盖已完成的最终消息；冲突行必须属于同一会话。
 	res, err := tx.ExecContext(ctx, `
 INSERT INTO chat_messages(session_id, request_id, role, content, token_count, source)
 VALUES(?,?,?,?,?,?)
@@ -253,6 +258,19 @@ ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)`,
 	id, err := res.LastInsertId()
 	if err != nil {
 		return 0, false, fmt.Errorf("last_insert_id: %w", err)
+	}
+	if affected != 1 {
+		var dbSession uint64
+		var dbRequest, dbRole string
+		if err := tx.QueryRowContext(ctx,
+			"SELECT session_id, request_id, role FROM chat_messages WHERE id=?", id).
+			Scan(&dbSession, &dbRequest, &dbRole); err != nil {
+			return 0, false, fmt.Errorf("verify idempotent row: %w", err)
+		}
+		if dbSession != sessionID || dbRequest != requestID || dbRole != role {
+			return 0, false, fmt.Errorf("%w: existing row session=%d request=%q role=%q",
+				ErrIdempotencyConflict, dbSession, dbRequest, dbRole)
+		}
 	}
 	return uint64(id), affected == 1, nil
 }

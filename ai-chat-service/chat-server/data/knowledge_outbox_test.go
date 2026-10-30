@@ -219,22 +219,22 @@ func TestKnowledgeServiceCacheAside(t *testing.T) {
 	// 模拟迟到 Worker 只写了旧版本缓存：读取仍必须以 MySQL 最新版本为准。
 	store.put(PublishedAnswerKey(entryID, v1), "answer-v1")
 	svc := NewKnowledgeService(repo, store, time.Hour, nil)
-	ans, err := svc.PublishedAnswer(ctx, tenant, entryID)
-	if err != nil || ans != "answer-v2" {
-		t.Fatalf("PublishedAnswer = %q, %v; want answer-v2", ans, err)
+	ans, ver, err := svc.PublishedAnswer(ctx, tenant, entryID)
+	if err != nil || ans != "answer-v2" || ver != v2 {
+		t.Fatalf("PublishedAnswer = %q v%d, %v; want answer-v2 v%d", ans, ver, err, v2)
 	}
 	if _, ok, _ := store.Get(ctx, PublishedAnswerKey(entryID, v2)); !ok {
 		t.Fatal("v2 answer was not written to cache on miss")
 	}
 	// 第二次命中缓存。
-	ans, err = svc.PublishedAnswer(ctx, tenant, entryID)
-	if err != nil || ans != "answer-v2" {
-		t.Fatalf("second PublishedAnswer = %q, %v", ans, err)
+	ans, ver, err = svc.PublishedAnswer(ctx, tenant, entryID)
+	if err != nil || ans != "answer-v2" || ver != v2 {
+		t.Fatalf("second PublishedAnswer = %q v%d, %v", ans, ver, err)
 	}
 	// 缓存故障不影响正确性。
 	store.setErr = errors.New("pocketkv down")
 	store.getErr = errors.New("pocketkv down")
-	ans, err = NewKnowledgeService(repo, store, time.Hour, nil).PublishedAnswer(ctx, tenant, entryID)
+	ans, _, err = NewKnowledgeService(repo, store, time.Hour, nil).PublishedAnswer(ctx, tenant, entryID)
 	if err != nil || ans != "answer-v2" {
 		t.Fatalf("cache-down PublishedAnswer = %q, %v", ans, err)
 	}
@@ -249,5 +249,46 @@ func TestRetryReason(t *testing.T) {
 	}
 	if _, ok := retryReason(errors.New("other")); ok {
 		t.Fatal("non-deadlock error should not retry")
+	}
+}
+
+type sequenceReader struct {
+	versions []uint32
+	idx      int
+	answers  map[uint32]string
+}
+
+func (r *sequenceReader) GetPublishedVersion(context.Context, uint64, uint64) (uint32, error) {
+	v := r.versions[len(r.versions)-1]
+	if r.idx < len(r.versions) {
+		v = r.versions[r.idx]
+	}
+	r.idx++
+	return v, nil
+}
+
+func (r *sequenceReader) GetVersion(_ context.Context, _ uint64, _ uint64, version uint32) (*KnowledgeVersion, error) {
+	return &KnowledgeVersion{Version: version, Answer: r.answers[version]}, nil
+}
+
+// 模拟 T1 读到 v1 并 cache hit 后、返回前 T2 已发布 v2：
+// 服务端必须重读新版本，返回 (v2, answer-v2) 而不是 (v2, answer-v1)。
+func TestPublishedAnswerCacheHitRechecksVersion(t *testing.T) {
+	cache := newFakeKBStore()
+	cache.put(PublishedAnswerKey(10, 1), "answer-v1")
+	reader := &sequenceReader{
+		versions: []uint32{1, 2, 2, 2},
+		answers:  map[uint32]string{1: "answer-v1", 2: "answer-v2"},
+	}
+	svc := NewKnowledgeService(reader, cache, time.Hour, nil)
+	ans, ver, err := svc.PublishedAnswer(context.Background(), 1, 10)
+	if err != nil {
+		t.Fatalf("PublishedAnswer: %v", err)
+	}
+	if ans != "answer-v2" || ver != 2 {
+		t.Fatalf("got (%q,v%d), want (answer-v2,v2)", ans, ver)
+	}
+	if _, ok, _ := cache.Get(context.Background(), PublishedAnswerKey(10, 2)); !ok {
+		t.Fatal("v2 answer was not cached after recheck")
 	}
 }

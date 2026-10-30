@@ -118,7 +118,7 @@ func (s *chatService) knowledgeAnswer(ctx context.Context, claims *contract.Iden
 	if s.knowledge == nil || claims == nil || meta.KnowledgeEntryID == 0 {
 		return "", false
 	}
-	ans, err := s.knowledge.PublishedAnswer(ctx, claims.TenantID, meta.KnowledgeEntryID)
+	ans, _, err := s.knowledge.PublishedAnswer(ctx, claims.TenantID, meta.KnowledgeEntryID)
 	if err != nil {
 		if !errors.Is(err, data.ErrNotPublished) && !errors.Is(err, data.ErrEntryNotFound) &&
 			!errors.Is(err, data.ErrVersionNotFound) {

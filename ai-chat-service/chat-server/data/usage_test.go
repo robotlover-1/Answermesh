@@ -179,3 +179,30 @@ func TestUsageRecorderDrainsAndCloses(t *testing.T) {
 		t.Fatalf("enqueue failures = %d", atomic.LoadInt64(&obs.enqueue))
 	}
 }
+
+// P1-02：不同用户复用同一 request_id 必须各自记用量，不能跨用户去重。
+func TestUsageRecordSameRequestDifferentUsers(t *testing.T) {
+	db, tenant := setupDB(t)
+	repo := NewUsageRepository(db, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ev := UsageEvent{
+		RequestID: fmt.Sprintf("usage-shared-%d", tenant), TenantID: tenant,
+		Source: UsageSourceLLM, ModelFamily: "m", Status: UsageStatusSuccess,
+		TokenSource: UsageTokenSourceActual, InputTokens: 10, OutputTokens: 20, CreatedAt: now,
+	}
+	for _, uid := range []uint64{1, 2} {
+		ev.UserID = uid
+		created, err := repo.Record(ctx, ev)
+		if err != nil || !created {
+			t.Fatalf("user %d record = %v, %v", uid, created, err)
+		}
+	}
+	rows, err := repo.DailyReport(ctx, tenant, now.Add(-24*time.Hour), now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Requests != 2 || rows[0].InputTokens != 20 {
+		t.Fatalf("daily = %+v, want 2 requests / 20 input tokens", rows)
+	}
+}

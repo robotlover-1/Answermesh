@@ -3,8 +3,9 @@
 // 设计约束：
 //   - 迁移只由单个 CLI/Job 执行，应用副本启动时不自动建表；
 //   - schema_migrations 记录版本与 up SQL 的 SHA-256，同一版本内容被修改会报错；
-//   - MySQL DDL 会隐式提交，事务不能回滚已执行的 DDL，因此所有 DDL 都写成
-//     IF NOT EXISTS，失败后可从断点重跑。
+//   - MySQL DDL 会隐式提交，事务不能回滚已执行的 DDL。迁移器会对
+//     duplicate column/key（1060/1061）与 drop 不存在对象（1091）做状态校验后
+//     安全重试；多条 ALTER 动作请拆成多条语句，避免一条失败连带跳过后续动作。
 package migrate
 
 import (
@@ -12,6 +13,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"regexp"
@@ -19,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 // Migration 是一个版本的正向/回滚 SQL。
@@ -98,6 +102,7 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS schema_migrations (
 type queryer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 const lockName = "answermesh_schema_migrations"
@@ -145,6 +150,60 @@ func AppliedVersions(ctx context.Context, q queryer) (map[int64]Applied, error) 
 	return out, rows.Err()
 }
 
+var (
+	alterTableRe = regexp.MustCompile("(?is)^\\s*ALTER\\s+TABLE\\s+([`\\w.]+)")
+	addKeyRe     = regexp.MustCompile("(?is)ADD\\s+(?:UNIQUE\\s+)?(?:KEY|INDEX)\\s+`?([A-Za-z0-9_]+)")
+	dropKeyRe    = regexp.MustCompile("(?is)DROP\\s+(?:KEY|INDEX)\\s+`?([A-Za-z0-9_]+)")
+	addColumnRe  = regexp.MustCompile("(?is)ADD\\s+COLUMN\\s+`?([A-Za-z0-9_]+)")
+)
+
+// ddlAlreadyApplied 处理 MySQL DDL 隐式提交后的重试：DDL 已生效但版本行写入失败时，
+// 下一次重跑会收到 duplicate column/key 或 “cannot drop, doesn't exist”。
+// 只有在该对象确实处于目标状态（存在/不存在）时才视为可重试成功。
+func ddlAlreadyApplied(ctx context.Context, q queryer, stmt string, execErr error) bool {
+	var me *mysql.MySQLError
+	if !errors.As(execErr, &me) {
+		return false
+	}
+	m := alterTableRe.FindStringSubmatch(stmt)
+	if m == nil {
+		return false
+	}
+	table := strings.Trim(strings.TrimSpace(m[1]), "`")
+	if i := strings.LastIndex(table, "."); i >= 0 {
+		table = strings.Trim(table[i+1:], "`")
+	}
+	indexExists := func(name string) bool {
+		var n int
+		err := q.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM information_schema.statistics
+WHERE table_schema=DATABASE() AND table_name=? AND index_name=?`, table, name).Scan(&n)
+		return err == nil && n > 0
+	}
+	columnExists := func(name string) bool {
+		var n int
+		err := q.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM information_schema.columns
+WHERE table_schema=DATABASE() AND table_name=? AND column_name=?`, table, name).Scan(&n)
+		return err == nil && n > 0
+	}
+	switch me.Number {
+	case 1061: // ER_DUP_KEYNAME
+		if k := addKeyRe.FindStringSubmatch(stmt); k != nil {
+			return indexExists(k[1])
+		}
+	case 1060: // ER_DUP_FIELDNAME
+		if c := addColumnRe.FindStringSubmatch(stmt); c != nil {
+			return columnExists(c[1])
+		}
+	case 1091: // ER_CANT_DROP_FIELD_OR_KEY
+		if k := dropKeyRe.FindStringSubmatch(stmt); k != nil {
+			return !indexExists(k[1])
+		}
+	}
+	return false
+}
+
 // Apply 依次执行未应用的迁移；返回本次新应用的版本。
 // 整个执行过程持有 GET_LOCK，多个 Job 并发启动时只有一个能真正执行。
 func Apply(ctx context.Context, db *sql.DB, migs []Migration) ([]int64, error) {
@@ -182,6 +241,9 @@ func apply(ctx context.Context, q queryer, migs []Migration) ([]int64, error) {
 		}
 		for i, stmt := range stmts {
 			if _, err := q.ExecContext(ctx, stmt); err != nil {
+				if ddlAlreadyApplied(ctx, q, stmt, err) {
+					continue
+				}
 				return done, fmt.Errorf("migrate: version %d (%s) statement %d: %w", m.Version, m.Name, i+1, err)
 			}
 		}
@@ -244,6 +306,9 @@ func rollbackLast(ctx context.Context, q queryer, migs []Migration, n int) ([]in
 		}
 		for i, stmt := range SplitStatements(m.DownSQL) {
 			if _, err := q.ExecContext(ctx, stmt); err != nil {
+				if ddlAlreadyApplied(ctx, q, stmt, err) {
+					continue
+				}
 				return done, fmt.Errorf("migrate: rollback %d statement %d: %w", v, i+1, err)
 			}
 		}

@@ -43,8 +43,8 @@ func TestLoadEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(migs) != 6 {
-		t.Fatalf("migrations = %d, want 6", len(migs))
+	if len(migs) != 9 {
+		t.Fatalf("migrations = %d, want 9", len(migs))
 	}
 	for i, m := range migs {
 		if m.Version != int64(i+1) || m.UpSQL == "" || m.DownSQL == "" || len(m.Checksum) != 64 {
@@ -123,5 +123,59 @@ func TestApplyAndRollbackMySQL(t *testing.T) {
 		if n != 0 {
 			t.Fatalf("table %s still exists after rollback", table)
 		}
+	}
+}
+
+// P2-02：模拟 DDL 已隐式提交但版本行写入失败后的重跑，迁移器必须能安全补齐。
+func TestDDLRetryAfterVersionInsertFailure(t *testing.T) {
+	dsn := os.Getenv("MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("MYSQL_TEST_DSN not set")
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	migs, err := migrate.Load(migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.RollbackLast(ctx, db, migs, len(migs)+8); err != nil {
+		t.Logf("pre-clean rollback: %v", err)
+	}
+	if _, err := migrate.Apply(ctx, db, migs); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	defer func() {
+		_, _ = migrate.RollbackLast(context.Background(), db, migs, len(migs)+8)
+		_, _ = db.ExecContext(context.Background(), "DROP TABLE IF EXISTS schema_migrations")
+	}()
+
+	// 0005/0006/0007/0008 的 DDL 已生效，但版本行丢失。
+	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version IN (5,6,7,8)"); err != nil {
+		t.Fatal(err)
+	}
+	// 0007 只完成了一半：新索引不存在、旧索引也不存在。
+	if _, err := db.ExecContext(ctx, "ALTER TABLE chat_messages DROP INDEX uk_session_request_role"); err != nil {
+		t.Fatalf("drop new index: %v", err)
+	}
+	done, err := migrate.Apply(ctx, db, migs)
+	if err != nil {
+		t.Fatalf("retry apply: %v", err)
+	}
+	if len(done) != 4 {
+		t.Fatalf("retried versions = %v, want 4", done)
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM information_schema.statistics
+WHERE table_schema=DATABASE() AND table_name='chat_messages' AND index_name='uk_session_request_role'`).Scan(&n); err != nil || n == 0 {
+		t.Fatalf("uk_session_request_role missing after retry: n=%d err=%v", n, err)
 	}
 }
