@@ -15,6 +15,8 @@ var (
 	ErrVersionNotFound = errors.New("knowledge version not found")
 	ErrNotApproved     = errors.New("knowledge version is not approved")
 	ErrVersionConflict = errors.New("knowledge version conflict")
+	// ErrKnowledgePublished：已发布版本不允许直接改变审核状态，需显式撤稿流程。
+	ErrKnowledgePublished = errors.New("published knowledge version cannot change review status")
 )
 
 type KnowledgeVersion struct {
@@ -96,11 +98,12 @@ func (r *KnowledgeRepository) Review(ctx context.Context, tenantID, entryID uint
 	}
 	return r.tx.run(ctx, "review_knowledge", func(tx *sql.Tx) error {
 		var cur string
+		var published uint32
 		if err := tx.QueryRowContext(ctx, `
-SELECT v.review_status
+SELECT v.review_status, e.published_version
 FROM knowledge_versions v JOIN knowledge_entries e ON e.id=v.entry_id
 WHERE v.entry_id=? AND v.version=? AND e.tenant_id=? FOR UPDATE`,
-			entryID, version, tenantID).Scan(&cur); err != nil {
+			entryID, version, tenantID).Scan(&cur, &published); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrVersionNotFound
 			}
@@ -108,6 +111,9 @@ WHERE v.entry_id=? AND v.version=? AND e.tenant_id=? FOR UPDATE`,
 		}
 		if cur == target {
 			return nil
+		}
+		if published == version {
+			return ErrKnowledgePublished
 		}
 		_, err := tx.ExecContext(ctx, `
 UPDATE knowledge_versions v JOIN knowledge_entries e ON e.id=v.entry_id

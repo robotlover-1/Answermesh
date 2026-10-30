@@ -91,6 +91,10 @@ func TestKnowledgePublishFlow(t *testing.T) {
 	if err := repo.Publish(ctx, tenant, entryID, version, 42); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
+	// 已发布版本不能直接改审核结果（需显式撤稿流程）。
+	if err := repo.Review(ctx, tenant, entryID, version, 42, false); !errors.Is(err, ErrKnowledgePublished) {
+		t.Fatalf("review published err = %v, want ErrKnowledgePublished", err)
+	}
 	// 重复发布同一版本：成功且不重复写 Outbox。
 	if err := repo.Publish(ctx, tenant, entryID, version, 42); err != nil {
 		t.Fatalf("idempotent Publish: %v", err)
@@ -163,7 +167,7 @@ func TestOutboxClaimRetryDoneAndLease(t *testing.T) {
 	}
 
 	// 失败退避：立即重领应为空。
-	if status, err := outbox.MarkFailed(ctx, jobs[0].ID, jobs[0].Attempts, 8, time.Second); err != nil || status != OutboxStatusPending {
+	if status, err := outbox.MarkFailed(ctx, jobs[0].ID, jobs[0].ClaimToken, jobs[0].Attempts, 8, time.Second); err != nil || status != OutboxStatusPending {
 		t.Fatalf("MarkFailed = %s, %v", status, err)
 	}
 	if jobs, err := outbox.Claim(ctx, 10, time.Second); err != nil || len(jobs) != 0 {
@@ -179,7 +183,7 @@ func TestOutboxClaimRetryDoneAndLease(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("claim after backoff = %v, %v", jobs, err)
 	}
-	if err := outbox.MarkDone(ctx, jobs[0].ID); err != nil {
+	if err := outbox.MarkDone(ctx, jobs[0].ID, jobs[0].ClaimToken); err != nil {
 		t.Fatal(err)
 	}
 	if pending, _, err := outbox.Stats(ctx); err != nil || pending != 0 {
@@ -199,7 +203,7 @@ func TestOutboxDeadAfterMaxAttempts(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("Claim = %v, %v", jobs, err)
 	}
-	status, err := outbox.MarkFailed(ctx, jobs[0].ID, 8, 8, time.Second)
+	status, err := outbox.MarkFailed(ctx, jobs[0].ID, jobs[0].ClaimToken, 8, 8, time.Second)
 	if err != nil || status != OutboxStatusDead {
 		t.Fatalf("MarkFailed max = %s, %v", status, err)
 	}
@@ -290,5 +294,47 @@ func TestPublishedAnswerCacheHitRechecksVersion(t *testing.T) {
 	}
 	if _, ok, _ := cache.Get(context.Background(), PublishedAnswerKey(10, 2)); !ok {
 		t.Fatal("v2 answer was not cached after recheck")
+	}
+}
+
+// P1-02：旧租约晚到的完成/失败不得覆盖新租约持有者。
+func TestOutboxLeaseFencing(t *testing.T) {
+	repo, outbox, tenant := newKnowledgeTestData(t)
+	ctx := context.Background()
+	entryID, err := repo.CreateEntry(ctx, tenant, "fencing", "db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustPublished(t, repo, tenant, entryID, "answer")
+
+	a, err := outbox.Claim(ctx, 1, time.Second)
+	if err != nil || len(a) != 1 {
+		t.Fatalf("claim A = %v, %v", a, err)
+	}
+	db := repo.db
+	if _, err := db.ExecContext(ctx,
+		"UPDATE cache_outbox SET locked_until=DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE id=?",
+		a[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	b, err := outbox.Claim(ctx, 1, time.Minute)
+	if err != nil || len(b) != 1 {
+		t.Fatalf("claim B = %v, %v", b, err)
+	}
+	if a[0].ClaimToken == "" || b[0].ClaimToken == "" || a[0].ClaimToken == b[0].ClaimToken {
+		t.Fatalf("expected distinct claim tokens: %q vs %q", a[0].ClaimToken, b[0].ClaimToken)
+	}
+	if err := outbox.MarkDone(ctx, a[0].ID, a[0].ClaimToken); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("stale MarkDone err = %v, want ErrLeaseLost", err)
+	}
+	if _, err := outbox.MarkFailed(ctx, a[0].ID, a[0].ClaimToken, 2, 8, time.Second); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("stale MarkFailed err = %v, want ErrLeaseLost", err)
+	}
+	if err := outbox.MarkDone(ctx, b[0].ID, b[0].ClaimToken); err != nil {
+		t.Fatalf("current MarkDone: %v", err)
+	}
+	var status string
+	if err := db.QueryRow("SELECT status FROM cache_outbox WHERE id=?", b[0].ID).Scan(&status); err != nil || status != OutboxStatusDone {
+		t.Fatalf("status = %q, %v; want done", status, err)
 	}
 }

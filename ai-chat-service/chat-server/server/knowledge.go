@@ -70,7 +70,8 @@ func knowledgeStatus(err error) error {
 		errors.Is(err, data.ErrNotPublished), errors.Is(err, data.ErrSessionNotFound):
 		return zrpc.NotFound(err)
 	case errors.Is(err, data.ErrInvalidArgument), errors.Is(err, data.ErrNotApproved),
-		errors.Is(err, data.ErrVersionConflict):
+		errors.Is(err, data.ErrVersionConflict), errors.Is(err, data.ErrKnowledgePublished),
+		errors.Is(err, data.ErrRequestPayloadMismatch):
 		return zrpc.InvalidArgument(err)
 	case errors.Is(err, context.DeadlineExceeded):
 		return zrpc.DeadlineExceeded(err)

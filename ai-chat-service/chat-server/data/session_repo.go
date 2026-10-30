@@ -2,7 +2,9 @@ package data
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,6 +19,8 @@ var (
 	// ErrIdempotencyConflict 表示唯一键冲突命中了不属于当前会话/请求的记录；
 	// 正常索引下不应出现，作为防御性校验避免静默复用他人记录。
 	ErrIdempotencyConflict = errors.New("message idempotency scope conflict")
+	// ErrRequestPayloadMismatch 表示同一 (session,request,role) 重试携带了不同内容。
+	ErrRequestPayloadMismatch = errors.New("request_id reused with different message content")
 )
 
 const (
@@ -243,11 +247,13 @@ func upsertFinalMessage(ctx context.Context, tx *sql.Tx, sessionID uint64, reque
 	// 幂等作用域是 (session_id, request_id, role)（migration 0007）：
 	// 重复请求保留原记录与 id（LAST_INSERT_ID(id) 让 LastInsertId 返回已有 id），
 	// 不用新内容覆盖已完成的最终消息；冲突行必须属于同一会话。
+	sum := sha256.Sum256([]byte(content))
+	contentHash := hex.EncodeToString(sum[:])
 	res, err := tx.ExecContext(ctx, `
-INSERT INTO chat_messages(session_id, request_id, role, content, token_count, source)
-VALUES(?,?,?,?,?,?)
+INSERT INTO chat_messages(session_id, request_id, role, content, token_count, source, content_hash)
+VALUES(?,?,?,?,?,?,?)
 ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)`,
-		sessionID, requestID, role, content, tokens, source)
+		sessionID, requestID, role, content, tokens, source, contentHash)
 	if err != nil {
 		return 0, false, err
 	}
@@ -261,15 +267,19 @@ ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)`,
 	}
 	if affected != 1 {
 		var dbSession uint64
-		var dbRequest, dbRole string
+		var dbRequest, dbRole, dbHash string
 		if err := tx.QueryRowContext(ctx,
-			"SELECT session_id, request_id, role FROM chat_messages WHERE id=?", id).
-			Scan(&dbSession, &dbRequest, &dbRole); err != nil {
+			"SELECT session_id, request_id, role, content_hash FROM chat_messages WHERE id=?", id).
+			Scan(&dbSession, &dbRequest, &dbRole, &dbHash); err != nil {
 			return 0, false, fmt.Errorf("verify idempotent row: %w", err)
 		}
 		if dbSession != sessionID || dbRequest != requestID || dbRole != role {
 			return 0, false, fmt.Errorf("%w: existing row session=%d request=%q role=%q",
 				ErrIdempotencyConflict, dbSession, dbRequest, dbRole)
+		}
+		if dbHash != "" && dbHash != contentHash {
+			return 0, false, fmt.Errorf("%w: session=%d request=%q role=%q",
+				ErrRequestPayloadMismatch, sessionID, requestID, role)
 		}
 	}
 	return uint64(id), affected == 1, nil

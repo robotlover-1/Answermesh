@@ -2,7 +2,11 @@ package data
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"time"
 )
 
@@ -16,12 +20,31 @@ const (
 	OutboxStatusDead       = "dead"
 )
 
+// ErrLeaseLost 表示任务已被其他 Worker 重新领取；旧持有者不得再写入完成/失败状态。
+var ErrLeaseLost = errors.New("outbox lease lost")
+
+func newClaimToken() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), randFallback())
+}
+
+var claimFallback uint64
+
+func randFallback() uint64 {
+	claimFallback++
+	return claimFallback
+}
+
 type OutboxJob struct {
-	ID        uint64
-	EntryID   uint64
-	Version   uint32
-	EventType string
-	Attempts  int
+	ID         uint64
+	EntryID    uint64
+	Version    uint32
+	EventType  string
+	Attempts   int
+	ClaimToken string
 }
 
 type OutboxRepository struct {
@@ -81,8 +104,13 @@ FOR UPDATE SKIP LOCKED`, limit)
 		return nil, err
 	}
 	if len(jobs) > 0 {
-		args := make([]any, 0, len(jobs)+1)
-		args = append(args, int(lease.Seconds())) // 对应 SQL 中第一个 ?
+		token := newClaimToken()
+		for i := range jobs {
+			jobs[i].ClaimToken = token
+		}
+		args := make([]any, 0, len(jobs)+2)
+		args = append(args, int(lease.Seconds())) // INTERVAL ?
+		args = append(args, token)                // claim_token=?
 		placeholders := ""
 		for i, j := range jobs {
 			if i > 0 {
@@ -93,9 +121,9 @@ FOR UPDATE SKIP LOCKED`, limit)
 		}
 		if _, err := tx.ExecContext(ctx, `
 UPDATE cache_outbox
-SET status='processing', attempts=attempts+1,
+SET status='processing', attempts=attempts+1, claim_token=?,
     locked_until=DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND)
-WHERE id IN (`+placeholders+`)`, args...); err != nil {
+WHERE id IN (`+placeholders+`)`, append([]any{args[1], args[0]}, args[2:]...)...); err != nil {
 			r.obs.DBQuery("claim_outbox", "error", time.Since(start).Seconds())
 			return nil, err
 		}
@@ -111,19 +139,24 @@ WHERE id IN (`+placeholders+`)`, args...); err != nil {
 	return jobs, nil
 }
 
-func (r *OutboxRepository) MarkDone(ctx context.Context, id uint64) error {
+func (r *OutboxRepository) MarkDone(ctx context.Context, id uint64, claimToken string) error {
 	start := time.Now()
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 UPDATE cache_outbox SET status='done', locked_until=NULL, processed_at=CURRENT_TIMESTAMP(3)
-WHERE id=?`, id)
+WHERE id=? AND status='processing' AND claim_token=?`, id, claimToken)
+	if err == nil {
+		if n, aerr := res.RowsAffected(); aerr == nil && n == 0 {
+			err = ErrLeaseLost
+		}
+	}
 	r.obs.DBQuery("ack_outbox", txResult(err), time.Since(start).Seconds())
 	return err
 }
 
 // MarkFailed：未超过 maxAttempts 时回到 pending 并按指数退避设置 available_at；
 // 超过则进入 dead，等待人工/告警处理。
-func (r *OutboxRepository) MarkFailed(ctx context.Context, id uint64, attempts, maxAttempts int,
-	baseBackoff time.Duration) (string, error) {
+func (r *OutboxRepository) MarkFailed(ctx context.Context, id uint64, claimToken string,
+	attempts, maxAttempts int, baseBackoff time.Duration) (string, error) {
 	status := OutboxStatusPending
 	if attempts >= maxAttempts {
 		status = OutboxStatusDead
@@ -139,11 +172,16 @@ func (r *OutboxRepository) MarkFailed(ctx context.Context, id uint64, attempts, 
 		backoffSec = 3600
 	}
 	start := time.Now()
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 UPDATE cache_outbox
 SET status=?, locked_until=NULL,
     available_at=DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND)
-WHERE id=?`, status, backoffSec, id)
+WHERE id=? AND status='processing' AND claim_token=?`, status, backoffSec, id, claimToken)
+	if err == nil {
+		if n, aerr := res.RowsAffected(); aerr == nil && n == 0 {
+			return "", ErrLeaseLost
+		}
+	}
 	r.obs.DBQuery("retry_outbox", txResult(err), time.Since(start).Seconds())
 	return status, err
 }

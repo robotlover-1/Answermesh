@@ -43,8 +43,8 @@ func TestLoadEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(migs) != 10 {
-		t.Fatalf("migrations = %d, want 10", len(migs))
+	if len(migs) != 14 {
+		t.Fatalf("migrations = %d, want 14", len(migs))
 	}
 	for i, m := range migs {
 		if m.Version != int64(i+1) || m.UpSQL == "" || m.DownSQL == "" || len(m.Checksum) != 64 {
@@ -177,5 +177,76 @@ func TestDDLRetryAfterVersionInsertFailure(t *testing.T) {
 SELECT COUNT(*) FROM information_schema.statistics
 WHERE table_schema=DATABASE() AND table_name='chat_messages' AND index_name='uk_session_request_role'`).Scan(&n); err != nil || n == 0 {
 		t.Fatalf("uk_session_request_role missing after retry: n=%d err=%v", n, err)
+	}
+}
+
+// P2-02：同名对象但定义不同必须 fail closed，不能被当作“已执行”跳过。
+func TestDDLDefinitionMismatchFailsClosed(t *testing.T) {
+	dsn := os.Getenv("MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("MYSQL_TEST_DSN not set")
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	migs, err := migrate.Load(migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.RollbackLast(ctx, db, migs, len(migs)+8); err != nil {
+		t.Logf("pre-clean rollback: %v", err)
+	}
+	if _, err := migrate.Apply(ctx, db, migs); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	defer func() {
+		_, _ = db.ExecContext(context.Background(), "ALTER TABLE llm_usage_events MODIFY token_source VARCHAR(16) NOT NULL DEFAULT 'actual'")
+		_, _ = db.ExecContext(context.Background(), "ALTER TABLE chat_messages DROP INDEX IF EXISTS uk_session_request_role")
+		_, _ = migrate.RollbackLast(context.Background(), db, migs, len(migs)+8)
+		_, _ = db.ExecContext(context.Background(), "DROP TABLE IF EXISTS schema_migrations")
+	}()
+
+	// 列类型漂移：version 6 已执行过，但列类型不同。
+	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version=6"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE llm_usage_events MODIFY token_source VARCHAR(8) NOT NULL DEFAULT 'actual'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Apply(ctx, db, migs); err == nil {
+		t.Fatal("expected mismatch failure for token_source type drift")
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE llm_usage_events MODIFY token_source VARCHAR(16) NOT NULL DEFAULT 'actual'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Apply(ctx, db, migs); err != nil {
+		t.Fatalf("apply after column restore: %v", err)
+	}
+
+	// 索引定义漂移：同名索引但列/唯一性与预期不同。
+	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version=7"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE chat_messages DROP INDEX uk_session_request_role"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE chat_messages ADD KEY uk_session_request_role (request_id)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Apply(ctx, db, migs); err == nil {
+		t.Fatal("expected mismatch failure for index definition drift")
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE chat_messages DROP INDEX uk_session_request_role"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrate.Apply(ctx, db, migs); err != nil {
+		t.Fatalf("apply after index restore: %v", err)
 	}
 }

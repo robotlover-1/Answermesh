@@ -71,6 +71,23 @@ func TestUsageRecordIdempotentAndDailyAggregate(t *testing.T) {
 	if tokenSource != UsageTokenSourceActual {
 		t.Fatalf("token_source = %q", tokenSource)
 	}
+
+	// tokenizer 来源单独累计，不混入 actual_tokens。
+	tokEv := ev
+	tokEv.RequestID = fmt.Sprintf("usage-%d-3", tenant)
+	tokEv.TokenSource = UsageTokenSourceTokenizer
+	tokEv.InputTokens, tokEv.OutputTokens = 7, 7
+	if created, err := repo.Record(ctx, tokEv); err != nil || !created {
+		t.Fatalf("tokenizer Record = %v, %v", created, err)
+	}
+	var actual, tokenizerTokens int64
+	if err := db.QueryRow(`SELECT actual_tokens, tokenizer_tokens FROM usage_daily
+WHERE tenant_id=? AND source='llm'`, tenant).Scan(&actual, &tokenizerTokens); err != nil {
+		t.Fatal(err)
+	}
+	if actual != 150 || tokenizerTokens != 14 {
+		t.Fatalf("usage_daily actual=%d tokenizer=%d, want 150/14", actual, tokenizerTokens)
+	}
 }
 
 func TestUsageRecordConcurrentSameRequest(t *testing.T) {

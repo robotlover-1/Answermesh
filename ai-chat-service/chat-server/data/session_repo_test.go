@@ -157,8 +157,6 @@ func TestAppendConversationIdempotent(t *testing.T) {
 	if !created1 {
 		t.Fatal("first append should report created")
 	}
-	in.UserContent = "changed-q"
-	in.AssistantContent = "changed-a"
 	uid2, aid2, created2, err := r.AppendConversation(ctx, tenant, user, sessionID, in)
 	if err != nil {
 		t.Fatalf("second append: %v", err)
@@ -168,6 +166,11 @@ func TestAppendConversationIdempotent(t *testing.T) {
 	}
 	if uid1 != uid2 || aid1 != aid2 {
 		t.Fatalf("ids changed: (%d,%d) vs (%d,%d)", uid1, aid1, uid2, aid2)
+	}
+	// 同一 request_id 携带不同内容必须拒绝，不能静默返回旧记录。
+	in.UserContent = "changed-q"
+	if _, _, _, err := r.AppendConversation(ctx, tenant, user, sessionID, in); !errors.Is(err, ErrRequestPayloadMismatch) {
+		t.Fatalf("same request_id different content err = %v, want ErrRequestPayloadMismatch", err)
 	}
 	var n int
 	if err := db.QueryRow("SELECT COUNT(*) FROM chat_messages WHERE session_id=?", sessionID).Scan(&n); err != nil {

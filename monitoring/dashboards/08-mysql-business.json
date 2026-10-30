@@ -84,11 +84,11 @@
           },
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT day AS time, actual_tokens, estimated_saved_tokens\nFROM vw_llm_usage_daily\nWHERE $__timeFilter(day)\nORDER BY day;",
+          "rawSql": "SELECT day AS time, actual_llm_tokens, tokenizer_estimated_tokens, estimated_saved_tokens\nFROM vw_llm_usage_daily\nWHERE $__timeFilter(day)\nORDER BY day;",
           "refId": "A"
         }
       ],
-      "title": "真实 tokens vs 估算节省（聚合视图）",
+      "title": "真实 / tokenizer / 估算节省 tokens（聚合视图）",
       "type": "timeseries",
       "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
     },
@@ -206,7 +206,7 @@
       "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
     }
   ],
-  "refresh": "10s",
+  "refresh": "1m",
   "schemaVersion": 39,
   "tags": [
     "mysql",

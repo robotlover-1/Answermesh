@@ -152,14 +152,14 @@ func AppliedVersions(ctx context.Context, q queryer) (map[int64]Applied, error) 
 
 var (
 	alterTableRe = regexp.MustCompile("(?is)^\\s*ALTER\\s+TABLE\\s+([`\\w.]+)")
-	addKeyRe     = regexp.MustCompile("(?is)ADD\\s+(?:UNIQUE\\s+)?(?:KEY|INDEX)\\s+`?([A-Za-z0-9_]+)")
+	addIndexRe   = regexp.MustCompile("(?is)ADD\\s+(?:(UNIQUE)\\s+)?(?:KEY|INDEX)\\s+`?([A-Za-z0-9_]+)`?\\s*\\(([^)]*)\\)")
 	dropKeyRe    = regexp.MustCompile("(?is)DROP\\s+(?:KEY|INDEX)\\s+`?([A-Za-z0-9_]+)")
-	addColumnRe  = regexp.MustCompile("(?is)ADD\\s+COLUMN\\s+`?([A-Za-z0-9_]+)")
+	addColumnRe  = regexp.MustCompile("(?is)ADD\\s+(?:COLUMN\\s+)?`?([A-Za-z0-9_]+)`?\\s+([A-Za-z]+(?:\\s+UNSIGNED)?(?:\\s*\\([0-9,]+\\))?)(.*)$")
 )
 
 // ddlAlreadyApplied 处理 MySQL DDL 隐式提交后的重试：DDL 已生效但版本行写入失败时，
 // 下一次重跑会收到 duplicate column/key 或 “cannot drop, doesn't exist”。
-// 只有在该对象确实处于目标状态（存在/不存在）时才视为可重试成功。
+// 只有在对象存在且**定义与预期一致**时才视为可重试成功；无法证明一致时 fail closed。
 func ddlAlreadyApplied(ctx context.Context, q queryer, stmt string, execErr error) bool {
 	var me *mysql.MySQLError
 	if !errors.As(execErr, &me) {
@@ -173,35 +173,85 @@ func ddlAlreadyApplied(ctx context.Context, q queryer, stmt string, execErr erro
 	if i := strings.LastIndex(table, "."); i >= 0 {
 		table = strings.Trim(table[i+1:], "`")
 	}
-	indexExists := func(name string) bool {
-		var n int
-		err := q.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM information_schema.statistics
-WHERE table_schema=DATABASE() AND table_name=? AND index_name=?`, table, name).Scan(&n)
-		return err == nil && n > 0
-	}
-	columnExists := func(name string) bool {
-		var n int
-		err := q.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM information_schema.columns
-WHERE table_schema=DATABASE() AND table_name=? AND column_name=?`, table, name).Scan(&n)
-		return err == nil && n > 0
-	}
 	switch me.Number {
 	case 1061: // ER_DUP_KEYNAME
-		if k := addKeyRe.FindStringSubmatch(stmt); k != nil {
-			return indexExists(k[1])
+		k := addIndexRe.FindStringSubmatch(stmt)
+		if k == nil {
+			return false
 		}
+		unique := strings.TrimSpace(k[1]) != ""
+		cols := strings.Split(k[3], ",")
+		expected := make([]string, 0, len(cols))
+		for _, c := range cols {
+			name := strings.TrimSpace(c)
+			if f := strings.Fields(name); len(f) > 0 {
+				name = f[0]
+			}
+			name = strings.Trim(strings.TrimSpace(name), "`")
+			if name != "" {
+				expected = append(expected, name)
+			}
+		}
+		return indexDefinitionMatches(ctx, q, table, k[2], unique, expected)
 	case 1060: // ER_DUP_FIELDNAME
-		if c := addColumnRe.FindStringSubmatch(stmt); c != nil {
-			return columnExists(c[1])
+		c := addColumnRe.FindStringSubmatch(stmt)
+		if c == nil {
+			return false
 		}
+		colType := strings.ToLower(strings.Join(strings.Fields(c[2]), " "))
+		nullable := !strings.Contains(strings.ToUpper(c[3]), "NOT NULL")
+		return columnDefinitionMatches(ctx, q, table, c[1], colType, nullable)
 	case 1091: // ER_CANT_DROP_FIELD_OR_KEY
 		if k := dropKeyRe.FindStringSubmatch(stmt); k != nil {
-			return !indexExists(k[1])
+			var n int
+			err := q.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM information_schema.statistics
+WHERE table_schema=DATABASE() AND table_name=? AND index_name=?`, table, k[1]).Scan(&n)
+			return err == nil && n == 0
 		}
 	}
 	return false
+}
+
+func indexDefinitionMatches(ctx context.Context, q queryer, table, name string, unique bool, expected []string) bool {
+	rows, err := q.QueryContext(ctx, `
+SELECT column_name, non_unique FROM information_schema.statistics
+WHERE table_schema=DATABASE() AND table_name=? AND index_name=?
+ORDER BY seq_in_index`, table, name)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	var got []string
+	nonUnique := 1
+	for rows.Next() {
+		var col string
+		var nu int
+		if err := rows.Scan(&col, &nu); err != nil {
+			return false
+		}
+		got = append(got, col)
+		nonUnique = nu
+	}
+	if rows.Err() != nil || len(got) != len(expected) {
+		return false
+	}
+	for i := range got {
+		if got[i] != expected[i] {
+			return false
+		}
+	}
+	return (nonUnique == 0) == unique
+}
+
+func columnDefinitionMatches(ctx context.Context, q queryer, table, name, expectedType string, nullable bool) bool {
+	var typ, isNullable string
+	if err := q.QueryRowContext(ctx, `
+SELECT column_type, is_nullable FROM information_schema.columns
+WHERE table_schema=DATABASE() AND table_name=? AND column_name=?`, table, name).Scan(&typ, &isNullable); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(typ), expectedType) && (isNullable == "YES") == nullable
 }
 
 // Apply 依次执行未应用的迁移；返回本次新应用的版本。

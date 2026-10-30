@@ -113,7 +113,10 @@ func (w *OutboxWorker) runOnce(ctx context.Context) {
 func (w *OutboxWorker) process(ctx context.Context, job data.OutboxJob) {
 	if job.EventType != "KNOWLEDGE_PUBLISHED" {
 		// 未知事件类型不可重试，直接进入 dead 以便告警/人工处理。
-		_, _ = w.repo.MarkFailed(ctx, job.ID, w.maxAttempts, w.maxAttempts, w.backoff)
+		if _, err := w.repo.MarkFailed(ctx, job.ID, job.ClaimToken, w.maxAttempts, w.maxAttempts, w.backoff); err != nil {
+			w.noteLeaseError(job, err)
+			return
+		}
 		w.metrics.OutboxEvent("dead")
 		return
 	}
@@ -121,7 +124,10 @@ func (w *OutboxWorker) process(ctx context.Context, job data.OutboxJob) {
 	if err != nil {
 		if errors.Is(err, data.ErrVersionNotFound) {
 			// 版本不存在属于永久错误，重试无意义。
-			_, _ = w.repo.MarkFailed(ctx, job.ID, w.maxAttempts, w.maxAttempts, w.backoff)
+			if _, err := w.repo.MarkFailed(ctx, job.ID, job.ClaimToken, w.maxAttempts, w.maxAttempts, w.backoff); err != nil {
+				w.noteLeaseError(job, err)
+				return
+			}
 			w.metrics.OutboxEvent("dead")
 			log.ErrorF("outbox dead: knowledge version missing entry=%d version=%d", job.EntryID, job.Version)
 			return
@@ -136,7 +142,11 @@ func (w *OutboxWorker) process(ctx context.Context, job data.OutboxJob) {
 			return
 		}
 	}
-	if err := w.repo.MarkDone(ctx, job.ID); err != nil {
+	if err := w.repo.MarkDone(ctx, job.ID, job.ClaimToken); err != nil {
+		if errors.Is(err, data.ErrLeaseLost) {
+			w.noteLeaseError(job, err)
+			return
+		}
 		log.ErrorF("outbox mark done failed id=%d: %v", job.ID, err)
 		w.metrics.OutboxEvent("error")
 		return
@@ -145,7 +155,11 @@ func (w *OutboxWorker) process(ctx context.Context, job data.OutboxJob) {
 }
 
 func (w *OutboxWorker) retry(ctx context.Context, job data.OutboxJob, cause error) {
-	status, err := w.repo.MarkFailed(ctx, job.ID, job.Attempts, w.maxAttempts, w.backoff)
+	status, err := w.repo.MarkFailed(ctx, job.ID, job.ClaimToken, job.Attempts, w.maxAttempts, w.backoff)
+	if errors.Is(err, data.ErrLeaseLost) {
+		w.noteLeaseError(job, err)
+		return
+	}
 	if err != nil {
 		log.ErrorF("outbox mark failed id=%d: %v", job.ID, err)
 		w.metrics.OutboxEvent("error")
@@ -157,4 +171,10 @@ func (w *OutboxWorker) retry(ctx context.Context, job data.OutboxJob, cause erro
 		return
 	}
 	w.metrics.OutboxEvent("retry")
+}
+
+// noteLeaseError：旧租约晚到的完成/失败不得改写新持有者的状态。
+func (w *OutboxWorker) noteLeaseError(job data.OutboxJob, err error) {
+	w.metrics.OutboxEvent("lease_lost")
+	log.InfoF("outbox lease lost id=%d attempts=%d: %v", job.ID, job.Attempts, err)
 }

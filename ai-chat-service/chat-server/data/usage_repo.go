@@ -107,6 +107,14 @@ func (r *UsageRepository) Record(ctx context.Context, ev UsageEvent) (created bo
 	}
 	createdAt := ev.CreatedAt.UTC()
 	day := createdAt.Format("2006-01-02")
+	actualTokens := 0
+	if ev.Source == UsageSourceLLM && ev.TokenSource == UsageTokenSourceActual {
+		actualTokens = ev.InputTokens + ev.OutputTokens
+	}
+	tokenizerTokens := 0
+	if ev.TokenSource == UsageTokenSourceTokenizer {
+		tokenizerTokens = ev.InputTokens + ev.OutputTokens
+	}
 	var sessionID any
 	if ev.SessionID != 0 {
 		sessionID = ev.SessionID
@@ -134,16 +142,20 @@ ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)`,
 		}
 		_, err = tx.ExecContext(ctx, `
 INSERT INTO usage_daily(tenant_id, day, source, model_family, requests,
-  input_tokens, output_tokens, estimated_saved_tokens, cost_microunits)
-VALUES(?,?,?,?,1,?,?,?,?)
+  input_tokens, output_tokens, estimated_saved_tokens, cost_microunits,
+  actual_tokens, tokenizer_tokens)
+VALUES(?,?,?,?,1,?,?,?,?,?,?)
 ON DUPLICATE KEY UPDATE
   requests=requests+1,
   input_tokens=input_tokens+VALUES(input_tokens),
   output_tokens=output_tokens+VALUES(output_tokens),
   estimated_saved_tokens=estimated_saved_tokens+VALUES(estimated_saved_tokens),
-  cost_microunits=cost_microunits+VALUES(cost_microunits)`,
+  cost_microunits=cost_microunits+VALUES(cost_microunits),
+  actual_tokens=actual_tokens+VALUES(actual_tokens),
+  tokenizer_tokens=tokenizer_tokens+VALUES(tokenizer_tokens)`,
 			ev.TenantID, day, ev.Source, ev.ModelFamily,
-			ev.InputTokens, ev.OutputTokens, ev.EstimatedSavedTokens, ev.CostMicrounits)
+			ev.InputTokens, ev.OutputTokens, ev.EstimatedSavedTokens, ev.CostMicrounits,
+			actualTokens, tokenizerTokens)
 		return err
 	})
 	return created, err
