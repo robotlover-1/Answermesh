@@ -1,0 +1,227 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 0,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "mysql",
+        "uid": "mysql"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mysql",
+            "uid": "mysql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT day AS time, llm_calls, cache_hits\nFROM vw_llm_usage_daily\nWHERE $__timeFilter(day)\nORDER BY day;",
+          "refId": "A"
+        }
+      ],
+      "title": "每日模型调用量（聚合视图）",
+      "type": "timeseries",
+      "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
+    },
+    {
+      "datasource": {
+        "type": "mysql",
+        "uid": "mysql"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mysql",
+            "uid": "mysql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT day AS time, actual_llm_tokens, tokenizer_estimated_tokens, estimated_saved_tokens\nFROM vw_llm_usage_daily\nWHERE $__timeFilter(day)\nORDER BY day;",
+          "refId": "A"
+        }
+      ],
+      "title": "真实 / tokenizer / 估算节省 tokens（聚合视图）",
+      "type": "timeseries",
+      "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
+    },
+    {
+      "datasource": {
+        "type": "mysql",
+        "uid": "mysql"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 3,
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mysql",
+            "uid": "mysql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT * FROM vw_knowledge_review_queue ORDER BY versions DESC;",
+          "refId": "A"
+        }
+      ],
+      "title": "知识审核队列（聚合视图）",
+      "type": "table",
+      "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
+    },
+    {
+      "datasource": {
+        "type": "mysql",
+        "uid": "mysql"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 4,
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mysql",
+            "uid": "mysql"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT * FROM vw_outbox_backlog ORDER BY jobs DESC;",
+          "refId": "A"
+        }
+      ],
+      "title": "Outbox 积压（聚合视图）",
+      "type": "table",
+      "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
+    },
+    {
+      "datasource": {
+        "type": "mysql",
+        "uid": "mysql"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mysql",
+            "uid": "mysql"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT day AS time, messages\nFROM vw_chat_message_daily\nWHERE $__timeFilter(day)\nORDER BY day;",
+          "refId": "A"
+        }
+      ],
+      "title": "每日消息量（聚合视图）",
+      "type": "timeseries",
+      "description": "只读账号仅授权 vw_* 聚合视图，不暴露原始聊天内容。"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": [
+    "mysql",
+    "business"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "08 MySQL 业务",
+  "uid": "mysql-business",
+  "version": 1
+}

@@ -1,14 +1,18 @@
 server:
   ip: 0.0.0.0
   port: 50055
-  accessToken: "me256487ang1chubdpdialoud22sev1ozhoguumyqca"
+  accessToken: "${AI_CHAT_SERVER_ACCESS_TOKEN}"
+  # 健康/指标 HTTP 默认只监听 loopback；跨主机/容器抓取时改为 0.0.0.0:8080，
+  # 并用内网策略 + metrics_access_token 限制来源。
+  metrics_addr: "127.0.0.1:8080"
+  metrics_access_token: "${AI_CHAT_METRICS_TOKEN}"
 log:
   # panic,fatal,error,warn,warning,info,debug,trace
   level: "info"
   logPath: "runtime/logs/app.log"
 chat:
   # openai key
-  api_key: "i0jey84SdkFdw5u43780yjr3h7se8nth0yi295nr94ksDngKprEh"
+  api_key: "${AI_CHAT_API_KEY}"
   # openai 接口地址
   base_url: "http://localhost:8084/v1"
   # 使用的训练模型（DeepSeek v4-flash，与用户 key 匹配）
@@ -41,17 +45,29 @@ redis:
   port: 5160
   pwd: ""
 mysql:
-  dsn: "root:123456@tcp(127.0.0.1:3306)/ai_chat?collation=utf8mb4_unicode_ci&charset=utf8mb4"
+  dsn: "${AI_CHAT_MYSQL_DSN}"
   maxLifeTime: 3600
   maxOpenConn: 10
   maxIdleConn: 10
+# backend 签发的短时用户身份令牌（HMAC）。secret 支持逗号分隔轮换，至少 16 字节。
+identity:
+  secret: "${AI_CHAT_IDENTITY_SECRET}"
+  issuer: "answermesh-backend"
+# 知识发布 Outbox Worker：DB 提交与 PocketKV 失效解耦，失败按租约重试/进入 dead。
+knowledge_outbox:
+  enabled: true
+  interval_seconds: 5
+  batch_size: 20
+  max_attempts: 8
+  lease_seconds: 60
+  cache_ttl_seconds: 86400
 dependOn:
   sensitive:
     address: "localhost:50053"
-    accessToken: "ang1chubdev1ozhome256487d22sapguuv1ozhom"
+    accessToken: "${AI_CHAT_SENSITIVE_ACCESS_TOKEN}"
   keywords:
     address: "localhost:50054"
-    accessToken: "ang1chubdev1ozhome256487d22sapguuv1ozhom"
+    accessToken: "${AI_CHAT_KEYWORDS_ACCESS_TOKEN}"
   tokenizer:
     address: "http://127.0.0.1:3002"
   semantic:

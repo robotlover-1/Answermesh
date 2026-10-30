@@ -1,14 +1,18 @@
 server:
   ip: 0.0.0.0
   port: 50051
-  accessToken: "me256487ang1chubdpdialoud22sev1ozhoguumyqca"
+  accessToken: "${AI_CHAT_SERVER_ACCESS_TOKEN}"
+  # 容器内探活与（可能存在的）同网络 Prometheus 抓取需要非 loopback 监听；
+  # 仅允许 compose 内网访问，不要直接把该端口发布到公网。
+  metrics_addr: "0.0.0.0:8080"
+  metrics_access_token: "${AI_CHAT_METRICS_TOKEN}"
 log:
   # panic,fatal,error,warn,warning,info,debug,trace
   level: "info"
   logPath: "runtime/logs/app.log"
 chat:
   # openai key
-  api_key: "i0jey84SdkFdw5u43780yjr3h7se8nth0yi295nr94ksDngKprEh"
+  api_key: "${AI_CHAT_API_KEY}"
   # openai 接口地址
   base_url: "http://localhost:8084/v1"
   # 使用的训练模型
@@ -41,17 +45,27 @@ redis:
   port: 6379
   pwd: "123456"
 mysql:
-  dsn: "root:123456@tcp(192.168.239.161:3306)/ai_chat?collation=utf8mb4_unicode_ci&charset=utf8mb4"
+  dsn: "${AI_CHAT_MYSQL_DSN}"
   maxLifeTime: 3600
   maxOpenConn: 10
   maxIdleConn: 10
+identity:
+  secret: "${AI_CHAT_IDENTITY_SECRET}"
+  issuer: "answermesh-backend"
+knowledge_outbox:
+  enabled: true
+  interval_seconds: 5
+  batch_size: 20
+  max_attempts: 8
+  lease_seconds: 60
+  cache_ttl_seconds: 86400
 dependOn:
   sensitive:
     address: "sensitive:50051"
-    accessToken: "ang1chubdev1ozhome256487d22sapguuv1ozhom"
+    accessToken: "${AI_CHAT_SENSITIVE_ACCESS_TOKEN}"
   keywords:
     address: "keywords:50051"
-    accessToken: "ang1chubdev1ozhome256487d22sapguuv1ozhom"
+    accessToken: "${AI_CHAT_KEYWORDS_ACCESS_TOKEN}"
   tokenizer:
     address: "http://tokenizer:3002"
   semantic:

@@ -48,6 +48,8 @@ services:
       SEMANTIC_INTER_OP: "1"
 
   sensitive:
+    environment:
+      AI_CHAT_SENSITIVE_ACCESS_TOKEN: "${AI_CHAT_SENSITIVE_ACCESS_TOKEN:-}"
     <<: *go-common
     build:
       context: ..
@@ -61,6 +63,8 @@ services:
     command: ["./app","--config=config.yaml","--dict=dict.txt"]
 
   keyword:
+    environment:
+      AI_CHAT_KEYWORDS_ACCESS_TOKEN: "${AI_CHAT_KEYWORDS_ACCESS_TOKEN:-}"
     <<: *go-common
     build:
       context: ..
@@ -86,6 +90,9 @@ services:
     command: ["./app","--config=config.yaml"]
 
   proxy:
+    environment:
+      OPENAI_PROXY_ACCESS_TOKEN: "${OPENAI_PROXY_ACCESS_TOKEN:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
     <<: *go-common
     build:
       context: ..
@@ -100,6 +107,13 @@ services:
     command: ["./app","--config=config.yaml"]
 
   ai-chat-service:
+    environment:
+      AI_CHAT_MYSQL_DSN: "${AI_CHAT_MYSQL_DSN:-}"
+      AI_CHAT_SERVER_ACCESS_TOKEN: "${AI_CHAT_SERVER_ACCESS_TOKEN:-}"
+      AI_CHAT_API_KEY: "${AI_CHAT_API_KEY:-}"
+      AI_CHAT_REDIS_PWD: "${AI_CHAT_REDIS_PWD:-}"
+      AI_CHAT_SENSITIVE_ACCESS_TOKEN: "${AI_CHAT_SENSITIVE_ACCESS_TOKEN:-}"
+      AI_CHAT_KEYWORDS_ACCESS_TOKEN: "${AI_CHAT_KEYWORDS_ACCESS_TOKEN:-}"
     <<: *go-common
     build:
       context: ..
@@ -119,6 +133,10 @@ services:
       - proxy
 
   ai-chat-backend:
+    environment:
+      AI_CHAT_MYSQL_DSN: "${AI_CHAT_MYSQL_DSN:-}"
+      AI_CHAT_SERVER_ACCESS_TOKEN: "${AI_CHAT_SERVER_ACCESS_TOKEN:-}"
+      AI_CHAT_REDIS_PWD: "${AI_CHAT_REDIS_PWD:-}"
     build:
       context: ..
       dockerfile: docker/backend.Dockerfile

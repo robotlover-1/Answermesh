@@ -26,8 +26,13 @@ pid_alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
 echo "== 停止监控 =="
 stop_one prometheus 9090
 stop_one grafana 3000
+for port in 9401 9402 9403; do stop_one "pocketkv-exporter-${port}" "$port"; done
+stop_one mysqld_exporter 9104
+stop_one node_exporter 9100
 
-for pair in "prometheus 9090" "grafana 3000"; do
+for pair in "prometheus 9090" "grafana 3000" "pocketkv-exporter-9401 9401" \
+            "pocketkv-exporter-9402 9402" "pocketkv-exporter-9403 9403" \
+            "mysqld_exporter 9104" "node_exporter 9100"; do
   set -- $pair
   name="$1"; port="$2"
   for i in $(seq 1 20); do port_listening "$port" || break; sleep 0.5; done
@@ -39,6 +44,7 @@ for pair in "prometheus 9090" "grafana 3000"; do
 done
 
 remaining=0
-port_listening 9090 && { echo "  [✘] prometheus 9090 仍在监听"; remaining=1; }
-port_listening 3000 && { echo "  [✘] grafana 3000 仍在监听"; remaining=1; }
+for port in 9090 3000 9401 9402 9403 9104 9100; do
+  port_listening "$port" && { echo "  [✘] $port 仍在监听"; remaining=1; }
+done
 if [ "$remaining" -eq 0 ]; then echo "✔ 监控已停止, 端口已释放"; else exit 1; fi

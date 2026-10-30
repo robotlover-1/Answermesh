@@ -1,8 +1,41 @@
 global:
-  scrape_interval: 5s
-  evaluation_interval: 5s
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+rule_files:
+  - alerts.yml
 
 scrape_configs:
-  - job_name: ai-chat-service
+  # 宿主机部署使用 127.0.0.1；容器部署必须换成 compose service DNS
+  # （如 ai-chat-service:8080、pocketkv-exporter:9400），容器内 127.0.0.1 指向自身。
+  - job_name: answermesh
+    scrape_timeout: 2s
     static_configs:
       - targets: ["127.0.0.1:8080"]
+    # 若服务端设置了 metrics_access_token（AI_CHAT_METRICS_TOKEN），取消注释并
+    # 在启动 Prometheus 的环境中导出同名变量（Prometheus 会展开 $VAR）。
+    # authorization:
+    #   type: Bearer
+    #   credentials: "${AI_CHAT_METRICS_TOKEN}"
+
+  # 一个 Exporter 对应一个 PocketKV 实例（9401 master / 9402.. slave）。
+  - job_name: pocketkv
+    scrape_timeout: 2s
+    static_configs:
+      - targets: ["127.0.0.1:9401"]
+        labels: { instance: "kv-master", role: "master" }
+      - targets: ["127.0.0.1:9402"]
+        labels: { instance: "kv-slave-a", role: "slave" }
+      - targets: ["127.0.0.1:9403"]
+        labels: { instance: "kv-slave-b", role: "slave" }
+
+  # mysqld_exporter >=0.15：使用 --config.my-cnf，不再用 DATA_SOURCE_NAME。
+  - job_name: mysql
+    scrape_timeout: 2s
+    static_configs:
+      - targets: ["127.0.0.1:9104"]
+
+  - job_name: node
+    scrape_timeout: 2s
+    static_configs:
+      - targets: ["127.0.0.1:9100"]

@@ -20,6 +20,32 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// Observer 观测缓存查询/写入。stage=gate|exact|semantic，result=hit|miss|bypass|error，
+// 均为固定枚举；实现方不得把问题/答案文本放进标签。
+type Observer interface {
+	CacheRequest(stage, result string)
+	CacheWrite(result string)
+}
+
+type nopObserver struct{}
+
+func (nopObserver) CacheRequest(string, string) {}
+func (nopObserver) CacheWrite(string)           {}
+
+var observer Observer = nopObserver{}
+
+// SetObserver 在 main 启动时注入；nil 表示不采集。
+func SetObserver(o Observer) {
+	if o == nil {
+		o = nopObserver{}
+	}
+	observer = o
+}
+
+func noteCache(stage, result string) {
+	observer.CacheRequest(stage, result)
+}
+
 // 语义服务专用 HTTP client：整体超时兜底，防 semantic 卡死拖住聊天。
 const semanticTimeout = 1500 * time.Millisecond
 
@@ -458,32 +484,45 @@ func backfillVec(cachedQ string) {
 
 // CacheQuery：返回 (answer, hit)。
 // 链路（Query 每请求恰好一次 /embed）：
-//   ① bypass/双空门；
-//   ② fp(ExactFingerprintEnabled) 命中且候选纯规则通过 → 返答；若 AsyncBackfill 且该候选在
-//      semd 无向量 → 异步回填。
-//   ③ VSEARCH <dim> vec topK <VectorNamespace>（复用其 cosine）；
-//   ④ 一次 /v1/decision/batch：通过者(share)按 cosine 排序，cos≥acceptance_threshold
-//      （soft 命中还需 SoftSemanticFallback），Top1-Top2 margin < min_margin → miss；命中返答。
+//
+//	① bypass/双空门；
+//	② fp(ExactFingerprintEnabled) 命中且候选纯规则通过 → 返答；若 AsyncBackfill 且该候选在
+//	   semd 无向量 → 异步回填。
+//	③ VSEARCH <dim> vec topK <VectorNamespace>（复用其 cosine）；
+//	④ 一次 /v1/decision/batch：通过者(share)按 cosine 排序，cos≥acceptance_threshold
+//	   （soft 命中还需 SoftSemanticFallback），Top1-Top2 margin < min_margin → miss；命中返答。
+//
+// CacheQuery 兼容旧调用方；需要区分 exact/semantic 的阶段时用 CacheQueryMeta。
 func CacheQuery(ctx context.Context, query string) (string, bool) {
+	ans, hit, _ := CacheQueryMeta(ctx, query)
+	return ans, hit
+}
+
+func CacheQueryMeta(ctx context.Context, query string) (string, bool, string) {
 	cnf := config.GetConfig()
 	if !cnf.SemanticCache.Enabled {
-		return "", false
+		noteCache("gate", "bypass")
+		return "", false, ""
 	}
 	probeModelConsistency()
 	sc := cnf.SemanticCache
 	// ① 一次 /embed（Query 只编码一次）
 	m, err := embedMetaOf(ctx, query)
 	if err != nil {
-		return "", false
+		noteCache("gate", "error")
+		return "", false, ""
 	}
 	log.InfoF("semcache_query_encodes=1 query_len=%d", len(query))
 	if m.Bypass || (m.Subject == "" && m.SubjectID == "") {
 		// 缓存准入（安全收窄）：状态修改/上下文依赖 → 不查；Subject 与 SubjectID 皆空
 		// （通用 how-to 如“怎么减肥”抽不到本体链路）→ 不查全局缓存。
-		return "", false
+		noteCache("gate", "bypass")
+		return "", false, ""
 	}
 	// ② fp 快路径
-	if sc.ExactFingerprintEnabled && m.Fingerprint != "" && m.FingerprintEligible {
+	fpChecked := sc.ExactFingerprintEnabled && m.Fingerprint != "" && m.FingerprintEligible
+	fpResult := "miss"
+	if fpChecked {
 		if cand, err := getClient().Do(ctx, "GET", semfpPrefix+m.Fingerprint); err == nil {
 			if cq, ok := cand.(string); ok && cq != "" {
 				shared, soft, reason, err := decisionOf(ctx, query, cq)
@@ -494,25 +533,33 @@ func CacheQuery(ctx context.Context, query string) (string, bool) {
 						if sc.AsyncBackfill && vectorEnabled && !vecExists(ctx, cq) {
 							go backfillVec(cq)
 						}
-						return ans, true
+						noteCache("exact", "hit")
+						return ans, true, "exact"
 					}
 				} else if err == nil && !shared {
 					log.InfoF("semcache_fingerprint_collision subject=%s reason=%s", m.SubjectID, reason)
 				} else if err == nil && shared {
 					log.InfoF("semcache_fingerprint_soft_skip subject=%s reason=%s", m.SubjectID, reason)
+				} else if err != nil {
+					fpResult = "error"
 				}
 			}
+		} else {
+			fpResult = "error"
 		}
+		noteCache("exact", fpResult)
 	}
 	// ③④ 向量召回 + 批量决策（vectorEnabled 关闭时跳过 → miss，fp 路径仍可命中）
 	if !vectorEnabled {
-		return "", false
+		noteCache("semantic", "bypass")
+		return "", false, ""
 	}
 	ns := vectorNamespaceOf(cnf)
 	k := topKOf(cnf)
 	qlist, scores := vsearch(ctx, m.Vec, k, ns)
 	if len(qlist) == 0 {
-		return "", false
+		noteCache("semantic", "miss")
+		return "", false, ""
 	}
 	decs := decisionBatch(ctx, query, qlist)
 	// 收集通过候选（按 condition 过滤），记录 reason 分布便于观测
@@ -546,7 +593,8 @@ func CacheQuery(ctx context.Context, query string) (string, bool) {
 		log.InfoF("semcache_soft_fallback_enabled soft=%d", reasonCtr["semantic_soft_match"])
 	}
 	if len(accepted) == 0 {
-		return "", false
+		noteCache("semantic", "miss")
+		return "", false, ""
 	}
 	// 按 cosine 降序
 	sort.SliceStable(accepted, func(a, b int) bool {
@@ -558,15 +606,18 @@ func CacheQuery(ctx context.Context, query string) (string, bool) {
 	top1 := accepted[0]
 	// Top1-Top2 过近 → miss（区分度保护）
 	if len(accepted) > 1 && top1.score-accepted[1].score < float64(sc.MinMargin) {
-		return "", false
+		noteCache("semantic", "miss")
+		return "", false, ""
 	}
 	ans, ok := fetchAnswer(ctx, top1.q)
 	if !ok {
 		log.InfoF("semcache_vector_hit_no_answer top=%.3f q=%q", top1.score, top1.q)
-		return "", false
+		noteCache("semantic", "miss")
+		return "", false, ""
 	}
 	log.InfoF("semcache_vector_hit subject=%s top=%.3f candidates=%d", m.SubjectID, top1.score, len(qlist))
-	return ans, true
+	noteCache("semantic", "hit")
+	return ans, true, "semantic"
 }
 
 // ============ CacheWrite：只写新 ns(semd:e5s:v1:) + 版本化 + fp；dual_write 灰度补旧 ============
@@ -579,19 +630,23 @@ func CacheWrite(ctx context.Context, query, answer string) error {
 	cnf := config.GetConfig()
 	sc := cnf.SemanticCache
 	if !sc.Enabled {
+		observer.CacheWrite("bypass")
 		return nil
 	}
 	probeModelConsistency()
 	m, err := embedMetaOf(ctx, query)
 	if err != nil {
+		observer.CacheWrite("error")
 		return err
 	}
 	if m.Bypass || (m.Subject == "" && m.SubjectID == "") {
 		// 缓存准入（安全收窄）：状态修改/上下文依赖 → 不写；Subject 与 SubjectID 皆空
 		// （通用 how-to 抽不到本体链路）→ 不写全局缓存。
+		observer.CacheWrite("bypass")
 		return nil
 	}
 	if _, err := getClient().Do(ctx, "SET", query, answer); err != nil {
+		observer.CacheWrite("error")
 		return err
 	}
 	// 写描述容：vectorEnabled 由 model-info 一致决定；禁用则只写答案+fp，不写向量。
@@ -609,6 +664,7 @@ func CacheWrite(ctx context.Context, query, answer string) error {
 			log.ErrorF("semcache_fingerprint_write_failed: %v", err)
 		}
 	}
+	observer.CacheWrite("ok")
 	return nil
 }
 

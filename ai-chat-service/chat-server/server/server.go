@@ -6,6 +6,7 @@ import (
 	metrics_bus "ai-chat-service/chat-server/metrics-bus"
 	semcache "ai-chat-service/chat-server/semcache"
 	"ai-chat-service/pkg/config"
+	"ai-chat-service/pkg/identity"
 	"ai-chat-service/pkg/log"
 	"ai-chat-service/proto"
 	"ai-chat-service/services/tokenizer"
@@ -17,28 +18,94 @@ import (
 	"github.com/google/uuid"
 	"github.com/sashabaranov/go-openai"
 	"io"
+	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 )
+
+const llmProvider = "openai_compatible"
+
+// estimateTokensRough 仅用于缓存命中时的“估算节省 token”；
+// 不用于计费、不写入权威用量。ASCII 约 4 字符/token，CJK 约 0.6 token/字符。
+func estimateTokensRough(s string) int {
+	if s == "" {
+		return 0
+	}
+	ascii, cjk, other := 0, 0, 0
+	for _, r := range s {
+		switch {
+		case r < utf8.RuneSelf:
+			ascii++
+		case r >= 0x2E80 && r <= 0x9FFF, r >= 0xF900 && r <= 0xFAFF:
+			cjk++
+		default:
+			other++
+		}
+	}
+	return int(math.Ceil(float64(ascii)/4 + float64(cjk)*0.6 + float64(other)*0.5))
+}
 
 type chatService struct {
 	config     *config.Config
 	log        log.ILogger
 	data       data.IChatRecordsData
 	busMetrics *metrics_bus.BusMetrics
+
+	// 可选依赖：未注入时聊天主链路保持原行为（不记用量、不写会话历史）。
+	sessions  *data.SessionRecorder
+	usage     *data.UsageRecorder
+	identity  *identity.Verifier
+	knowledge *data.KnowledgeService
+}
+
+type ChatDeps struct {
+	Sessions  *data.SessionRecorder
+	Usage     *data.UsageRecorder
+	Identity  *identity.Verifier
+	Knowledge *data.KnowledgeService
 }
 
 func NewChatService(data data.IChatRecordsData, config *config.Config, log log.ILogger, busMetrics *metrics_bus.BusMetrics) ChatSvc {
+	return NewChatServiceWithDeps(data, config, log, busMetrics, ChatDeps{})
+}
+
+func NewChatServiceWithDeps(data data.IChatRecordsData, config *config.Config, log log.ILogger,
+	busMetrics *metrics_bus.BusMetrics, deps ChatDeps) ChatSvc {
 	return &chatService{
 		config:     config,
 		log:        log,
 		data:       data,
 		busMetrics: busMetrics,
+		sessions:   deps.Sessions,
+		usage:      deps.Usage,
+		identity:   deps.Identity,
+		knowledge:  deps.Knowledge,
+	}
+}
+
+// enqueueRecord 把记录交给有界入库队列；不阻塞请求路径超过 200ms。
+// 失败只记录错误并计数，不把用户内容写入日志。
+func (s *chatService) enqueueRecord(records *data.ChatRecord) {
+	addCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := s.data.Add(addCtx, records); err != nil {
+		// 入队失败已由 data 层按 reason 计入 records_enqueue_failures_total；
+		// 这里只记录日志，避免同一失败被重复计数。
+		s.log.Error(err)
 	}
 }
 
 func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompletionRequest) (*proto.ChatCompletionResponse, error) {
+	start := time.Now()
+	claims, meta, err := s.unaryIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	requestID := requestIDOf(in.Id)
+
 	redisContextCache := chat_context.NewRedisCache()
 	defer redisContextCache.Close()
 
@@ -46,16 +113,40 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 	//敏感词过滤
 	ok, msg, err := app.sensitive(in)
 	if err != nil {
+		s.recordUsage(claims, meta, requestID, data.UsageSourceUnknown,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return nil, err
 	}
 	if !ok {
+		s.recordUsage(claims, meta, requestID, data.UsageSourceBlocked,
+			data.UsageStatusSuccess, data.UsageTokenSourceNone, 0, 0, 0, start)
 		res := app.buildChatCompletionResponse(msg)
 		return res, nil
 	}
 
+	// 已审核发布知识优先于语义缓存/LLM（版本指针以 MySQL 为准）。
+	if ans, ok := s.knowledgeAnswer(ctx, claims, meta); ok {
+		saved := estimateTokensRough(in.Message) + estimateTokensRough(ans)
+		s.recordUsage(claims, meta, requestID, data.UsageSourceKnowledge,
+			data.UsageStatusSuccess, data.UsageTokenSourceNone, 0, 0, saved, start)
+		s.appendConversation(claims, meta, requestID, data.UsageSourceKnowledge, in.Message,
+			estimateTokensRough(in.Message), ans, estimateTokensRough(ans))
+		return app.buildChatCompletionResponse(ans), nil
+	}
+
 	// 语义缓存：命中直接返回历史答案（不调大模型）
-	if cachedAns, hit := semcache.CacheQuery(ctx, in.Message); hit {
+	if cachedAns, hit, stage := semcache.CacheQueryMeta(ctx, in.Message); hit {
+		saved := estimateTokensRough(in.Message) + estimateTokensRough(cachedAns)
+		s.busMetrics.LLMToken("estimated_saved", saved)
+		source := data.UsageSourceCacheSemantic
+		if stage == "exact" {
+			source = data.UsageSourceCacheExact
+		}
+		s.recordUsage(claims, meta, requestID, source,
+			data.UsageStatusSuccess, data.UsageTokenSourceNone, 0, 0, saved, start)
+		s.appendConversation(claims, meta, requestID, source, in.Message,
+			estimateTokensRough(in.Message), cachedAns, estimateTokensRough(cachedAns))
 		return app.buildChatCompletionResponse(cachedAns), nil
 	}
 
@@ -66,22 +157,36 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 	req, tokens, currTokens, currMessage, err := app.buildChatCompletionRequest(in, false)
 	if err != nil {
 		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		s.recordUsage(claims, meta, requestID, data.UsageSourceUnknown,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return nil, err
 	}
 	resp, err := client.CreateChatCompletion(ctx, req)
 	if err != nil {
+		s.busMetrics.LLMRequest(llmProvider, "error")
+		s.recordUsage(claims, meta, requestID, data.UsageSourceLLM,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return nil, err
 	}
+	s.busMetrics.LLMRequest(llmProvider, "ok")
+	// 只有模型返回 usage 的 unary 路径记录实际 token；缓存节省量单独用 estimated_saved。
+	// （usage 为 0 时 LLMToken 会忽略，避免把“未返回 usage”伪装成 0 消耗。）
+	s.busMetrics.LLMToken("input", resp.Usage.PromptTokens)
+	s.busMetrics.LLMToken("output", resp.Usage.CompletionTokens)
 	res := &proto.ChatCompletionResponse{}
 	bytes, err := json.Marshal(resp)
 	if err != nil {
+		s.recordUsage(claims, meta, requestID, data.UsageSourceLLM,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return nil, err
 	}
 	err = jsonpb.UnmarshalString(string(bytes), res)
 	if err != nil {
+		s.recordUsage(claims, meta, requestID, data.UsageSourceLLM,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return nil, err
 	}
@@ -109,32 +214,41 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 			return
 		}
 	}()
-	go func() {
-		records := &data.ChatRecord{
-			UserMsg:         in.Message,
-			UserMsgTokens:   currTokens,
-			UserMsgKeywords: keywords,
-			AIMsg:           resp.Choices[0].Message.Content,
-			AIMsgTokens:     resp.Usage.CompletionTokens,
-			ReqTokens:       tokens,
-			CreateAt:        time.Now().Unix(),
-		}
-		err := s.data.Add(records)
-		if err != nil {
-			s.log.Error(err)
-			return
-		}
-		// 空回答不写缓存，避免污染
-		if content := resp.Choices[0].Message.Content; content != "" {
-			if err := semcache.CacheWrite(context.Background(), in.Message, content); err != nil {
+	records := &data.ChatRecord{
+		UserMsg:         in.Message,
+		UserMsgTokens:   currTokens,
+		UserMsgKeywords: keywords,
+		AIMsg:           resp.Choices[0].Message.Content,
+		AIMsgTokens:     resp.Usage.CompletionTokens,
+		ReqTokens:       tokens,
+		CreateAt:        time.Now().Unix(),
+	}
+	s.enqueueRecord(records)
+	s.recordUsage(claims, meta, requestID, data.UsageSourceLLM, data.UsageStatusSuccess,
+		data.UsageTokenSourceActual, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, 0, start)
+	s.appendConversation(claims, meta, requestID, data.UsageSourceLLM, in.Message,
+		currTokens, resp.Choices[0].Message.Content, resp.Usage.CompletionTokens)
+	// 空回答不写缓存，避免污染；缓存写入不占用 DB 写入路径。
+	if content := resp.Choices[0].Message.Content; content != "" {
+		go func() {
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := semcache.CacheWrite(cacheCtx, in.Message, content); err != nil {
 				s.log.Error(err)
 			}
-		}
-	}()
+		}()
+	}
 	return res, err
 }
 
 func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stream ChatStream) error {
+	start := time.Now()
+	claims, meta, err := s.unaryIdentity(stream.Context())
+	if err != nil {
+		return err
+	}
+	requestID := requestIDOf(in.Id)
+
 	redisContextCache := chat_context.NewRedisCache()
 	defer redisContextCache.Close()
 
@@ -143,11 +257,15 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 	ok, msg, err := app.sensitive(in)
 	if err != nil {
 		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		s.recordUsage(claims, meta, requestID, data.UsageSourceUnknown,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return err
 	}
 	if !ok {
 		s.busMetrics.SensitiveQuestionsTotalCounter.Inc()
+		s.recordUsage(claims, meta, requestID, data.UsageSourceBlocked,
+			data.UsageStatusSuccess, data.UsageTokenSourceNone, 0, 0, 0, start)
 		resId := uuid.New().String()
 		startRes := app.buildChatCompletionStreamResponse(resId, "", "")
 		endRes := app.buildChatCompletionStreamResponse(resId, "", "stop")
@@ -172,8 +290,34 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 		return nil
 	}
 
+	// 已审核发布知识优先于语义缓存/LLM。
+	if ans, ok := s.knowledgeAnswer(stream.Context(), claims, meta); ok {
+		saved := estimateTokensRough(in.Message) + estimateTokensRough(ans)
+		s.recordUsage(claims, meta, requestID, data.UsageSourceKnowledge,
+			data.UsageStatusSuccess, data.UsageTokenSourceNone, 0, 0, saved, start)
+		s.appendConversation(claims, meta, requestID, data.UsageSourceKnowledge, in.Message,
+			estimateTokensRough(in.Message), ans, estimateTokensRough(ans))
+		resId := uuid.New().String()
+		_ = stream.Send(app.withSource(app.buildChatCompletionStreamResponse(resId, "", ""), "knowledge"))
+		for _, res := range app.buildChatCompletionStreamResponseList(resId, ans) {
+			_ = stream.Send(app.withSource(res, "knowledge"))
+		}
+		_ = stream.Send(app.withSource(app.buildChatCompletionStreamResponse(resId, "", "stop"), "knowledge"))
+		return nil
+	}
+
 	// 语义缓存：命中直接返回历史答案（不调大模型），标注来源 cache
-	if cachedAns, hit := semcache.CacheQuery(stream.Context(), in.Message); hit {
+	if cachedAns, hit, stage := semcache.CacheQueryMeta(stream.Context(), in.Message); hit {
+		saved := estimateTokensRough(in.Message) + estimateTokensRough(cachedAns)
+		s.busMetrics.LLMToken("estimated_saved", saved)
+		source := data.UsageSourceCacheSemantic
+		if stage == "exact" {
+			source = data.UsageSourceCacheExact
+		}
+		s.recordUsage(claims, meta, requestID, source, data.UsageStatusSuccess,
+			data.UsageTokenSourceNone, 0, 0, saved, start)
+		s.appendConversation(claims, meta, requestID, source, in.Message,
+			estimateTokensRough(in.Message), cachedAns, estimateTokensRough(cachedAns))
 		resId := uuid.New().String()
 		startRes := app.withSource(app.buildChatCompletionStreamResponse(resId, "", ""), "cache")
 		endRes := app.withSource(app.buildChatCompletionStreamResponse(resId, "", "stop"), "cache")
@@ -192,22 +336,34 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 	req, tokens, currTokens, currMessage, err := app.buildChatCompletionRequest(in, false)
 	if err != nil {
 		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		s.recordUsage(claims, meta, requestID, data.UsageSourceUnknown,
+			usageStatusOf(err), data.UsageTokenSourceNone, 0, 0, 0, start)
 		s.log.Error(err)
 		return err
 	}
 	// deepseek-v4-flash 偶发整轮只推理不出 content（content 为空）；重试一次提高成功概率。
 	// 只展示正式 content，不把推理过程当答案。
+	// TTFT 从本轮 stream 开始计时，仅在首次拿到正式 content 时记录一次。
+	ttftStart := time.Now()
+	var ttftOnce sync.Once
+	onFirstToken := func() {
+		ttftOnce.Do(func() { reportFirstToken(stream.Context(), time.Since(ttftStart)) })
+	}
 	var completionContent, resultID, lastFinish string
 	for attempt := 0; attempt < 2 && completionContent == ""; attempt++ {
 		if attempt > 0 {
 			s.log.InfoF("retry LLM: previous pass produced no content")
 		}
-		content, rid, fin, serr := app.streamLLMContent(stream.Context(), stream, req)
+		content, rid, fin, serr := app.streamLLMContent(stream.Context(), stream, req, onFirstToken)
 		if serr != nil {
+			s.busMetrics.LLMRequest(llmProvider, "error")
 			s.busMetrics.ErrQuestionsTotalCounter.Inc()
+			s.recordUsage(claims, meta, requestID, data.UsageSourceLLM,
+				usageStatusOf(serr), data.UsageTokenSourceNone, 0, 0, 0, start)
 			s.log.Error(serr)
 			return serr
 		}
+		s.busMetrics.LLMRequest(llmProvider, "ok")
 		completionContent, resultID, lastFinish = content, rid, fin
 	}
 	// 收尾：空内容给兜底提示；length 给截断提示；正常发 stop 收尾包
@@ -247,6 +403,9 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 	resultTokens, err := tokenizer.GetTokens(&resultMessage, model)
 	if err != nil {
 		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		// LLM 已成功但 tokenizer 不可用：只记输入侧 tokenizer 计数，输出未知。
+		s.recordUsage(claims, meta, requestID, data.UsageSourceLLM, data.UsageStatusSuccess,
+			data.UsageTokenSourceTokenizer, currTokens, 0, 0, start)
 		s.log.Error(err)
 		return err
 	}
@@ -279,36 +438,40 @@ func (s *chatService) chatCompletionStream(in *proto.ChatCompletionRequest, stre
 			return
 		}
 	}()
-	go func() {
-		s.busMetrics.QuestionsTotalCounter.Inc()
-		records := &data.ChatRecord{
-			UserMsg:         in.Message,
-			UserMsgTokens:   currTokens,
-			UserMsgKeywords: keywords,
-			AIMsg:           completionContent,
-			AIMsgTokens:     resultTokens,
-			ReqTokens:       tokens,
-			CreateAt:        time.Now().Unix(),
-		}
-		err := s.data.Add(records)
-		if err != nil {
-			s.log.Error(err)
-			return
-		}
-		// 空回答或被截断(length)的回答不写缓存，避免污染
-		if completionContent != "" && lastFinish != "length" {
-			if err := semcache.CacheWrite(context.Background(), in.Message, completionContent); err != nil {
+	s.busMetrics.QuestionsTotalCounter.Inc()
+	records := &data.ChatRecord{
+		UserMsg:         in.Message,
+		UserMsgTokens:   currTokens,
+		UserMsgKeywords: keywords,
+		AIMsg:           completionContent,
+		AIMsgTokens:     resultTokens,
+		ReqTokens:       tokens,
+		CreateAt:        time.Now().Unix(),
+	}
+	s.enqueueRecord(records)
+	s.recordUsage(claims, meta, requestID, data.UsageSourceLLM, data.UsageStatusSuccess,
+		data.UsageTokenSourceTokenizer, currTokens, resultTokens, 0, start)
+	if completionContent != "" {
+		s.appendConversation(claims, meta, requestID, data.UsageSourceLLM, in.Message,
+			currTokens, completionContent, resultTokens)
+	}
+	// 空回答或被截断(length)的回答不写缓存，避免污染
+	if completionContent != "" && lastFinish != "length" {
+		go func() {
+			cacheCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := semcache.CacheWrite(cacheCtx, in.Message, completionContent); err != nil {
 				s.log.Error(err)
 			}
-		}
-	}()
+		}()
+	}
 	return nil
 }
 
 // streamLLMContent 发起一次原始 SSE 流式请求，把正式 content 逐块发给客户端。
 // 不展示 reasoning_content（思考过程）；只返回累积 content、resultID、最后 finish_reason。
 // 收尾（stop/截断提示/兜底）由调用方处理，以便 content 为空时可整体重试。
-func (a *app) streamLLMContent(ctx context.Context, stream ChatStream, req openai.ChatCompletionRequest) (string, string, string, error) {
+func (a *app) streamLLMContent(ctx context.Context, stream ChatStream, req openai.ChatCompletionRequest, onFirstToken func()) (string, string, string, error) {
 	req.Stream = true
 	httpResp, err := a.streamRawRequest(ctx, req)
 	if err != nil {
@@ -360,6 +523,9 @@ func (a *app) streamLLMContent(ctx context.Context, stream ChatStream, req opena
 		}
 		if text == "" {
 			continue // 纯推理 chunk：跳过
+		}
+		if content == "" && onFirstToken != nil {
+			onFirstToken()
 		}
 		content += text
 		res := a.withSource(a.buildChatCompletionStreamResponse(resultID, text, ""), "llm")

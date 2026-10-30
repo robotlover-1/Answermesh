@@ -1,7 +1,7 @@
 server:
   ip: 0.0.0.0
   port: 50053
-  accessToken: "ang1chubdev1ozhome256487d22sapguuv1ozhom"
+  accessToken: "${AI_CHAT_KEYWORDS_ACCESS_TOKEN}"
   healthPort: 18081
 log:
   # panic,fatal,errro,warn,info,debug,trace

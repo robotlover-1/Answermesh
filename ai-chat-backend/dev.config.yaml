@@ -33,17 +33,22 @@ chat:
 dependOn:
   ai-chat-service:
     address: "localhost:50055"
-    accessToken: "me256487ang1chubdpdialoud22sev1ozhoguumyqca"
+    accessToken: "${AI_CHAT_SERVER_ACCESS_TOKEN}"
 redis:
   host: "127.0.0.1"
   port: 5160
   pwd: ""
 mysql:
-  dsn: "root:123456@tcp(127.0.0.1:3306)/ai_chat?charset=utf8mb4"
+  dsn: "${AI_CHAT_MYSQL_DSN}"
   maxOpenConn: 10
   maxIdleConn: 10
 auth:
   enabled: true
   init_quota: 100000
+identity:
+  secret: "${AI_CHAT_IDENTITY_SECRET}"
+  issuer: "answermesh-backend"
+  tenant_id: 1
+  admin_user_ids: []
 tokenizer:
   address: "http://127.0.0.1:3002"
